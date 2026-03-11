@@ -1,5 +1,5 @@
 import os
-import gym
+import gymnasium as gym
 import torch
 import torch.nn as nn
 import numpy as np
@@ -12,16 +12,16 @@ def play(policy_net):
     render_env = gym.make('BipedalWalker-v3')
 
     with torch.no_grad():
-        state = render_env.reset()
-        total_reward = 0
+        state, _ = render_env.reset()
+        total_reward = 0.0
         length = 0
 
         while True:
             render_env.render()
             state_tensor = torch.tensor(np.expand_dims(state, axis=0), dtype=torch.float32, device='cpu')
             action = policy_net.choose_action(state_tensor, deterministic=True).cpu().numpy()
-            state, reward, done, info = render_env.step(action[0])
-            total_reward += reward
+            state, reward, done, info, _ = render_env.step(action[0])
+            total_reward += float(reward)
             length += 1
 
             if done:
@@ -34,7 +34,7 @@ def play(policy_net):
 def train(env, runner, policy_net, value_net, agent, max_episode=5000):
     mean_total_reward = 0
     mean_length = 0
-    save_dir = './save'
+    save_dir = '../save'
 
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
@@ -76,8 +76,8 @@ def train(env, runner, policy_net, value_net, agent, max_episode=5000):
 if __name__ == '__main__':
     #Create the environment
     env = gym.make('BipedalWalker-v3')
-    s_dim = env.observation_space.shape[0]
-    a_dim = env.action_space.shape[0]
+    s_dim = env.observation_space.shape[0] # type: ignore
+    a_dim = env.action_space.shape[0] # type: ignore
     print(s_dim)
     print(a_dim)
 

@@ -46,7 +46,7 @@ class PolicyNet(nn.Module):
             nn.Linear(128, 128),
             nn.ReLU()
         )
-        self.dist = DiagGaussian(128, a_dim)
+        self.dist = DiagGaussian(128, a_dim) # output distribution
     
     #Forward pass
     def forward(self, state, deterministic=False):

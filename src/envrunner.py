@@ -52,7 +52,7 @@ class EnvRunner:
     #Run an episode using the policy net & value net
     def run(self, env, policy_net, value_net):
         #Run an episode
-        state = env.reset()   #Initial state
+        state, _ = env.reset()   #Initial state
         episode_len = self.max_step
 
         for step in range(self.max_step):
@@ -61,15 +61,18 @@ class EnvRunner:
             value = value_net(state_tensor)
 
             action = action.cpu().numpy()[0]
-            a_logp = a_logp.cpu().numpy()
-            value  = value.cpu().numpy()
+            a_logp = a_logp.cpu().numpy()[0]
+            value  = value.cpu().numpy()[0]
+            
+            # print(self.mb_a_logps)
+            # print(a_logp)
 
             self.mb_states[step] = state
             self.mb_actions[step] = action
             self.mb_a_logps[step] = a_logp
             self.mb_values[step] = value
 
-            state, reward, done, info = env.step(action)
+            state, reward, done, info, _ = env.step(action)
             self.mb_rewards[step] = reward
 
             if done:
@@ -79,7 +82,7 @@ class EnvRunner:
         #Compute returns
         last_value = value_net(
             torch.tensor(np.expand_dims(state, axis=0), dtype=torch.float32, device=self.device)
-        ).cpu().numpy()
+        ).cpu().numpy()[0]
 
         mb_returns = self.compute_discounted_return(self.mb_rewards[:episode_len], last_value)
         '''
