@@ -5,7 +5,7 @@ import numpy as np
 #PPO algorithm
 class PPO:
     #Constructor
-    def __init__(self, policy_net, value_net, lr=1e-4, max_grad_norm=0.5, ent_weight=0.01, clip_val=0.2, sample_n_epoch=4, sample_mb_size=64, device='cpu'):
+    def __init__(self, policy_net, value_net, lr=1e-4, max_grad_norm=0.5, ent_weight=0.01, clip_val=0.2, sample_n_epoch=4, sample_mb_size=64, device=torch.device("cpu")):
         self.policy_net = policy_net
         self.value_net = value_net
         self.max_grad_norm = max_grad_norm
@@ -19,13 +19,14 @@ class PPO:
     
     #Train the policy net & value net using PPO
     def train(self, mb_states, mb_actions, mb_old_values, mb_advs, mb_returns, mb_old_a_logps):
-        #Convert numpy array to tensor
+        # convert numpy array to tensor
         mb_states = torch.from_numpy(mb_states).to(self.device)
         mb_actions = torch.from_numpy(mb_actions).to(self.device)
         mb_old_values = torch.from_numpy(mb_old_values).to(self.device)
         mb_advs = torch.from_numpy(mb_advs).to(self.device)
         mb_returns = torch.from_numpy(mb_returns).to(self.device)
         mb_old_a_logps = torch.from_numpy(mb_old_a_logps).to(self.device)
+        
         episode_length = len(mb_states)
         rand_idx = np.arange(episode_length)
         sample_n_mb = episode_length // self.sample_mb_size

@@ -14,4 +14,4 @@ pip install -r requirements.txt
 
 ## Credits
 
-This repo was based on AndersonPeng's [ppo_tutorial](https://github.com/AndersonPeng/ppo_tutorial).
+Manual PPO implementation is based on AndersonPeng's [ppo_tutorial](https://github.com/AndersonPeng/ppo_tutorial).

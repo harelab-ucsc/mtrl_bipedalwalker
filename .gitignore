@@ -129,5 +129,7 @@ dmypy.json
 .pyre/
 
 #Save
+models/
+logs/
 save/
 *.pt

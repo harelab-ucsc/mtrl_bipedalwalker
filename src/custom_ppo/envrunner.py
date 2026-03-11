@@ -4,7 +4,7 @@ import numpy as np
 #Environment Runner
 class EnvRunner:
     #Constructor
-    def __init__(self, s_dim, a_dim, gamma=0.99, lamb=0.95, max_step=2048, device='cpu'):
+    def __init__(self, s_dim, a_dim, gamma=0.99, lamb=0.95, max_step=2048, device=torch.device("cpu")):
         self.s_dim = s_dim
         self.a_dim = a_dim
         self.gamma = gamma
