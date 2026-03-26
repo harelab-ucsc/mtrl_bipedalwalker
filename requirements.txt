@@ -1,3 +1,4 @@
+absl-py==2.4.0
 asttokens==3.0.1
 Box2D==2.3.10
 cloudpickle==3.1.2
@@ -9,16 +10,19 @@ Farama-Notifications==0.0.4
 filelock==3.25.2
 fonttools==4.62.0
 fsspec==2026.2.0
+grpcio==1.78.0
 gymnasium==1.2.3
 ipython==9.10.0
 ipython_pygments_lexers==1.1.1
 jedi==0.19.2
 Jinja2==3.1.6
 kiwisolver==1.5.0
+Markdown==3.10.2
 MarkupSafe==3.0.3
 matplotlib==3.10.8
 matplotlib-inline==0.2.1
 mpmath==1.3.0
+-e git+ssh://git@github.com/harelab-ucsc/mtrl_distillation_bipedalwalker.git@4540c57169a1a2d0744c53478b3386700d97599d#egg=mtrl_bipedalwalker
 networkx==3.6.1
 numpy==2.4.3
 packaging==26.0
@@ -27,6 +31,7 @@ parso==0.8.6
 pexpect==4.9.0
 pillow==12.1.1
 prompt_toolkit==3.0.52
+protobuf==7.34.1
 ptyprocess==0.7.0
 pure_eval==0.2.3
 pygame==2.6.1
@@ -38,8 +43,11 @@ stable_baselines3==2.7.1
 stack-data==0.6.3
 swig==4.4.1
 sympy==1.14.0
+tensorboard==2.20.0
+tensorboard-data-server==0.7.2
 torch==2.10.0
 torchvision==0.25.0
 traitlets==5.14.3
 typing_extensions==4.15.0
 wcwidth==0.6.0
+Werkzeug==3.1.7

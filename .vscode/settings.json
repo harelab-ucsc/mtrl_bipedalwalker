@@ -1,0 +1,14 @@
+{
+    "python.analysis.extraPaths": [
+        "/opt/ros/jazzy/lib/python3.12/site-packages",
+        "/opt/ros/jazzy/local/lib/python3.12/dist-packages",
+        "${workspaceFolder}/install/ros2_b1_control/lib/python3.12/site-packages",
+        "/pvc/isaac-sim/IsaacLab/source/isaaclab",
+        "/pvc/isaac-sim/IsaacLab/source/isaaclab_assets",
+        "/pvc/project-files/lemon/b1_walk/source/b1_walk/b1_walk",
+        "/pvc/project-files/scraps/ur10/source/ur10/ur10",
+        "/Users/lemonfoxmere/uni-local/cse140/pacai",
+        "./lib"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:pyenv"
+}

@@ -1,12 +1,19 @@
 import gymnasium as gym
 from stable_baselines3 import PPO
 
-models_dir = "../../models/PPO"
+from lib.paths import MODELS_DIR
 
-env = gym.make('BipedalWalker-v3', render_mode="human") 
+# =========================================
+
+EXPERIMENT_NAME = "basic_walker_5-00_39_40-2026_03_26"
+MODEL_CHECKPOINT = "best/best_model"
+
+# =========================================
+
+env = gym.make("BipedalWalker-v3", render_mode="human")
 env.reset()
 
-model_path = f"{models_dir}/290000.zip"
+model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"
 model = PPO.load(model_path, env=env)
 
 episodes = 5
