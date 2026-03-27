@@ -8,7 +8,7 @@ SEED = 42
 def main():
     
     env = make("BipedalWalker-v3", render_mode="human")
-    wrap_env = Test_Wrapper(env)
+    wrap_env = Test_Wrapper(env, plotting=True)
     wrap_env.reset(seed=SEED)
     wrap_env.action_space.seed(SEED)
     

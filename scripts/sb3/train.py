@@ -16,8 +16,8 @@ from datetime import datetime
 import time
 import os
 
-from lib.paths import MODELS_DIR, LOGS_DIR
-from lib.logging import Standard_TB_Callback, fmt_duration
+from lib.utils.paths import MODELS_DIR, LOGS_DIR
+from lib.utils.logging import Standard_TB_Callback, fmt_duration
 
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
