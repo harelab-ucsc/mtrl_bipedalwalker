@@ -17,7 +17,7 @@ import time
 import os
 
 from lib.paths import MODELS_DIR, LOGS_DIR
-from lib.logging import StandardTBCallback, fmt_duration
+from lib.logging import Standard_TB_Callback, fmt_duration
 
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
@@ -27,7 +27,7 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "basic_walker_5" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "basic_walker_6" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 TIMESTEPS = 100 * 2048 * 14
 
 # =========================================
@@ -70,7 +70,7 @@ def main():
     model.learn(
         total_timesteps=TIMESTEPS,
         reset_num_timesteps=False,
-        callback=CallbackList([StandardTBCallback(), eval_cb, ckpt_cb]),
+        callback=CallbackList([Standard_TB_Callback(), eval_cb, ckpt_cb]),
         progress_bar=True,
     )
 

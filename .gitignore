@@ -128,8 +128,11 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-#Save
+# Save
 models/
 logs/
 save/
 *.pt
+
+# VSCode
+.vscode

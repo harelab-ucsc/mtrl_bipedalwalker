@@ -1,6 +1,6 @@
 # MTRL Distillation BipedalWalker
 
-Multi-teacher student distillation MTRL implementation for the OpenAI Gymnasium environment BipedalWalker.
+Multi-teacher student distillation MTRL implementation for BipedalWalkerV3.
 
 ## Setup
 
