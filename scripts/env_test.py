@@ -4,7 +4,7 @@ from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 import os
 
-from wrappers.bipedal_walker.plot_env import Plot_Env
+from wrappers.bipedal_walker.plot_env import Plotter
 
 SEED = 42
 
@@ -16,7 +16,7 @@ def main():
     global _sim_paused, _sim_step
     
     env = make("BipedalWalker-v3", render_mode="human")
-    wrap_env = Plot_Env(env)
+    wrap_env = Plotter(env)
     wrap_env.reset(seed=SEED)
     wrap_env.action_space.seed(SEED)
     

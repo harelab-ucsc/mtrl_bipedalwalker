@@ -6,7 +6,7 @@ from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 
 from utils.paths import MODELS_DIR
-from wrappers.bipedal_walker.plot_env import Plot_Env
+from wrappers.bipedal_walker.plot_env import Plotter
 
 # =========================================
 
@@ -19,7 +19,7 @@ _sim_paused = False
 _sim_step = False
 
 env = gym.make("BipedalWalker-v3", render_mode="human")
-wrap_env = Plot_Env(env)
+wrap_env = Plotter(env)
 wrap_env.reset()
 
 model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"
