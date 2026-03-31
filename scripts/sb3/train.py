@@ -4,6 +4,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.utils import LinearSchedule
+from stable_baselines3.common.monitor import Monitor
 
 from stable_baselines3.common.callbacks import (
     EvalCallback,
@@ -17,7 +18,8 @@ import time
 import os
 
 from utils.paths import MODELS_DIR, LOGS_DIR
-from utils.logging import Standard_TB_Callback, fmt_duration
+from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
+from wrappers.bipedal_walker.standing_env import StandReward
 
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
@@ -27,7 +29,7 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "basic_walker_6" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "stand_1" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 TIMESTEPS = 100 * 2048 * 14
 
 # =========================================
@@ -36,8 +38,24 @@ TIMESTEPS = 100 * 2048 * 14
 def main():
     print("Loading environments...")
 
-    train_env = make_vec_env("BipedalWalker-v3", n_envs=14, vec_env_cls=SubprocVecEnv)
-    eval_env = make_vec_env("BipedalWalker-v3", n_envs=5, vec_env_cls=SubprocVecEnv)
+    def make_env():
+        env = gym.make("BipedalWalker-v3")
+        env = Monitor(StandReward(env))
+        return env
+
+    train_env = SubprocVecEnv([make_env for _ in range(14)])
+    eval_env = SubprocVecEnv([make_env for _ in range(5)])
+    
+    # train_env = make_vec_env(
+    #     "BipedalWalker-v3",
+    #     n_envs=14,
+    #     vec_env_cls=SubprocVecEnv
+    # )
+    # eval_env = make_vec_env(
+    #     "BipedalWalker-v3",
+    #     n_envs=5,
+    #     vec_env_cls=SubprocVecEnv
+    # )
 
     model = PPO(
         "MlpPolicy",
@@ -70,7 +88,7 @@ def main():
     model.learn(
         total_timesteps=TIMESTEPS,
         reset_num_timesteps=False,
-        callback=CallbackList([Standard_TB_Callback(), eval_cb, ckpt_cb]),
+        callback=CallbackList([StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]),
         progress_bar=True,
     )
 

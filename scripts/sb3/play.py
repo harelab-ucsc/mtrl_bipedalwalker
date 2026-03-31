@@ -6,11 +6,12 @@ from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 
 from utils.paths import MODELS_DIR
-from wrappers.bipedal_walker.plot_env import Plotter
+from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.plot_env import Plotter
 
 # =========================================
 
-EXPERIMENT_NAME = "3_25_2026/basic_walker_5-00_39_40-2026_03_26"
+EXPERIMENT_NAME = "stand_1-16_15_47-2026_03_31"
 MODEL_CHECKPOINT = "best/best_model"
 
 # =========================================
@@ -19,7 +20,7 @@ _sim_paused = False
 _sim_step = False
 
 env = gym.make("BipedalWalker-v3", render_mode="human")
-wrap_env = Plotter(env)
+wrap_env = Plotter(StandReward(env))
 wrap_env.reset()
 
 model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"

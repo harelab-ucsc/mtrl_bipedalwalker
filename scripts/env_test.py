@@ -4,19 +4,21 @@ from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 import os
 
-from wrappers.bipedal_walker.plot_env import Plotter
+from wrappers.plot_env import Plotter
+from wrappers.bipedal_walker.standing_env import StandReward
 
 SEED = 42
 
 _sim_paused = False
 _sim_step = False
+_sim_res = False
 
 
 def main():
-    global _sim_paused, _sim_step
+    global _sim_paused, _sim_step, _sim_res
     
     env = make("BipedalWalker-v3", render_mode="human")
-    wrap_env = Plotter(env)
+    wrap_env = Plotter(StandReward(env))
     wrap_env.reset(seed=SEED)
     wrap_env.action_space.seed(SEED)
     
@@ -24,6 +26,11 @@ def main():
     listener.start()  # start to listen on a separate thread
     
     while(1):
+        if _sim_res:
+            _sim_res = False
+            wrap_env.reset()
+            continue
+        
         if _sim_paused:
             if not _sim_step:
                 continue
@@ -34,14 +41,17 @@ def main():
         
         # random agent
         action = wrap_env.action_space.sample()
-        wrap_env.step(action)
+        _, _, term, trunc, _ = wrap_env.step(action)
         print("=== Testing with action: ", action)
+        
+        if term or trunc:
+            _sim_res = True
         # print()
         # print();
 
 
 def on_press(key: Key | KeyCode | None) -> None:
-    global _sim_paused, _sim_step
+    global _sim_paused, _sim_step, _sim_res
     
     if isinstance(key, KeyCode):
         k = key.char
@@ -55,6 +65,8 @@ def on_press(key: Key | KeyCode | None) -> None:
         print("Paused" if _sim_paused else "Resumed")
     elif k == 's':
         _sim_step = True
+    elif k == 'r':
+        _sim_res = True
     elif k == 'q':
         print("Exiting...")
         os._exit(0)

@@ -38,7 +38,7 @@ mdurl==0.1.2
 ml_dtypes==0.5.4
 mpmath==1.3.0
 msgpack==1.1.2
--e git+ssh://git@github.com/harelab-ucsc/mtrl_bipedalwalker.git@58ae2e2aee5dda107bc7bc73c30af1241cb01b18#egg=mtrl_bipedalwalker
+-e git+ssh://git@github.com/harelab-ucsc/mtrl_bipedalwalker.git@9827910f0348cf817a56d471a4b8bbc05cd309a1#egg=mtrl_bipedalwalker
 mypy_extensions==1.1.0
 networkx==3.6.1
 numpy==2.4.3
