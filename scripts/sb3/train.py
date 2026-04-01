@@ -29,7 +29,7 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "stand_4" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "stand_5" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 TIMESTEPS = 100 * 2048 * 14
 
 # =========================================

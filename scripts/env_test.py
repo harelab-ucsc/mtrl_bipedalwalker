@@ -1,3 +1,4 @@
+import pygame
 import numpy as np
 from gymnasium import make
 from pynput import keyboard
@@ -8,6 +9,7 @@ from wrappers.plot_env import Plotter
 from wrappers.bipedal_walker.standing_env import StandReward
 
 SEED = 42
+DRAW_PLOTS = False
 
 _sim_paused = False
 _sim_step = False
@@ -17,17 +19,23 @@ _sim_res = False
 def main():
     global _sim_paused, _sim_step, _sim_res
     
-    print("Loading environments...")
-    
-    env = make("BipedalWalker-v3", render_mode="human")
-    wrap_env = Plotter(StandReward(env))
-    wrap_env.reset(seed=SEED)
-    wrap_env.action_space.seed(SEED)
-    
     listener = keyboard.Listener(on_press=on_press)
     listener.start()  # start to listen on a separate thread
     
+    print("Loading environments...")
+    
+    env = make("BipedalWalker-v3", render_mode="human")
+    
+    wrap_env = StandReward(env)
+    if DRAW_PLOTS:
+        wrap_env = Plotter(wrap_env)
+    
+    wrap_env.reset(seed=SEED)
+    wrap_env.action_space.seed(SEED)
+    
     while(1):
+        pygame.event.pump()  # keep window alive on pause
+        
         if _sim_res:
             _sim_res = False
             wrap_env.reset()

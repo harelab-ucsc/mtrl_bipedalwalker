@@ -63,9 +63,9 @@ class StandReward(Wrapper):
             ("x_vel_l2", x_vel_l2, -0.2),
             ("hull_ang_vel", hull_ang_vel, -0.2),  # penalize deviation from 0
             ("leg_contacts", leg_contacts, 0.1),
-            ("hull_ang_l2", hull_ang_l2, -0.5),  # penalize deviation from 0
-            ("down_firing_lidar", down_firing_lidar, 0.5),
-            ("termination", termination, -20.0),
+            ("hull_ang_l2", hull_ang_l2, -0.6),  # penalize deviation from 0
+            ("down_firing_lidar", down_firing_lidar, 0.3),
+            ("termination", termination, -10.0),
         ]
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
@@ -91,21 +91,37 @@ class StandReward(Wrapper):
         hull = env.hull
         legs = env.legs
         
-        # move hull up slightly to prevent legs from clipping into the ground
-        hull.position += b2Vec2(0, 0.2)
-
         # all of these constants are defined here:
         # https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L31
         SCALE = 30.0
         LEG_DOWN = -8 / SCALE
         LEG_H = 34 / SCALE
+        
+        # two differen type of reset:
+        # Mode 0: sit -> stand (random crouching position to standing)
+        # Mode 1: stand -> keep balancing (random standing position + some hull velocity)
+
+        MODE = np.random.choice([0,1])
+        # MODE = 0
 
         # hip lim: (-0.8, 1.1)
-        HIP_SAMPLE_LIM = (-0.5, 0.5)
+        HIP_SAMPLE_LIM = (-0.5, 0.5) if MODE == 0 else (-0.3, 1.1)
         # knee lim: (-1.6, -0.1)
-        KNEE_SAMPLE_LIM = (-0.5, -0.1)
-        VEL_SAMPLE_LIM = (-1.0, 1.0)
+        KNEE_SAMPLE_LIM = (-0.5, -0.1) if MODE == 0 else (-1.6, -1.4)
+        JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
+        # hull sampling
+        HULL_Y_SAMPLE_LIM = (0.2, 1.0) if MODE == 0 else (-0.4, 0.0)
+        HULL_VEL_X_SAMPLE_LIM = (-2, 5) if MODE == 0 else (-1, 1)
+        HULL_VEL_Y_SAMPLE_LIM = (-0.2, 0.2)
+        
+        # move hull up slightly to prevent legs from clipping into the ground
+        hull.position += b2Vec2(0, np.random.uniform(*HULL_Y_SAMPLE_LIM))
+        hull.linearVelocity += b2Vec2(
+            np.random.uniform(*HULL_VEL_X_SAMPLE_LIM),
+            np.random.uniform(*HULL_VEL_Y_SAMPLE_LIM)
+        )
 
+        # get hull position and angle to calculate joint pos
         hull_a = hull.angle
         hull_x, hull_y = hull.position
 
@@ -149,7 +165,7 @@ class StandReward(Wrapper):
                 body.position = (bx, by)
                 body.angle = ba
                 body.linearVelocity = (0, 0)
-                body.angularVelocity = np.random.uniform(*VEL_SAMPLE_LIM)
+                body.angularVelocity = np.random.uniform(*JOINT_VEL_SAMPLE_LIM)
                 body.awake = True
 
         # apply the changes

@@ -1,5 +1,6 @@
 import os
 from gymnasium import make
+import pygame
 from stable_baselines3 import PPO
 
 from pynput import keyboard
@@ -11,8 +12,9 @@ from wrappers.plot_env import Plotter
 
 # =========================================
 
-EXPERIMENT_NAME = "stand_3-12_21_12-2026_04_01"
+EXPERIMENT_NAME = "stand_4-12_37_38-2026_04_01"
 MODEL_CHECKPOINT = "best/best_model"
+DRAW_PLOTS = False
 
 # =========================================
 
@@ -24,13 +26,22 @@ _sim_res = False
 def main():
     global _sim_paused, _sim_step, _sim_res
     
+    # start key listeners
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()  # start to listen on a separate thread
+    
     print(f"=== Starting experiment \"{EXPERIMENT_NAME}\" ===")
     
     # load env
     print("Loading environments...")
     env = make("BipedalWalker-v3", render_mode="human")
-    wrap_env = Plotter(StandReward(env))
+    
+    wrap_env = StandReward(env)
+    if DRAW_PLOTS:
+        wrap_env = Plotter(wrap_env)
+    
     obs, _ = wrap_env.reset()
+    
     # wrap_env.action_space.seed(SEED)
     
     # load model
@@ -38,13 +49,11 @@ def main():
     model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"
     model = PPO.load(model_path, env=wrap_env)
     
-    # start key listeners
-    listener = keyboard.Listener(on_press=on_press)
-    listener.start()  # start to listen on a separate thread
-    
     total_rewards = 0
     
     while(1):
+        pygame.event.pump()  # keep window alive on pause
+        
         if _sim_res:
             # print out total rewards before resetting
             print(f"Total rewards: {total_rewards}")
@@ -59,13 +68,12 @@ def main():
                 continue
             else:
                 _sim_step = False
-        
+
         assert wrap_env.action_space.shape is not None
         
-        action, _states = model.predict(obs)
+        action, _states = model.predict(obs)        
         obs, rewards, term, trunc, _ = wrap_env.step(action)
         total_rewards += float(rewards)
-        wrap_env.render()
         
         if term or trunc:
             _sim_res = True
