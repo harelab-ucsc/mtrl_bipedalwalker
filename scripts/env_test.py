@@ -17,6 +17,8 @@ _sim_res = False
 def main():
     global _sim_paused, _sim_step, _sim_res
     
+    print("Loading environments...")
+    
     env = make("BipedalWalker-v3", render_mode="human")
     wrap_env = Plotter(StandReward(env))
     wrap_env.reset(seed=SEED)
@@ -41,7 +43,10 @@ def main():
         
         # random agent
         # action = wrap_env.action_space.sample()
+        
+        # zero agent
         action = np.zeros(wrap_env.action_space.shape)
+        
         _, _, term, trunc, _ = wrap_env.step(action)
         # print("=== Testing with action: ", action)
         

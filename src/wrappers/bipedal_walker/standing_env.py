@@ -2,6 +2,7 @@ from typing import Any, SupportsFloat
 
 from gymnasium import Env, Wrapper
 from gymnasium.core import ActType, ObsType
+from Box2D import b2Vec2
 
 import numpy as np
 import math
@@ -62,9 +63,9 @@ class StandReward(Wrapper):
             ("x_vel_l2", x_vel_l2, -0.2),
             ("hull_ang_vel", hull_ang_vel, -0.2),  # penalize deviation from 0
             ("leg_contacts", leg_contacts, 0.1),
-            ("hull_ang_l2", hull_ang_l2, -0.4),  # penalize deviation from 0
-            ("down_firing_lidar", down_firing_lidar, 0.3),
-            ("termination", termination, -10.0),
+            ("hull_ang_l2", hull_ang_l2, -0.5),  # penalize deviation from 0
+            ("down_firing_lidar", down_firing_lidar, 0.5),
+            ("termination", termination, -20.0),
         ]
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
@@ -89,6 +90,9 @@ class StandReward(Wrapper):
         env = self.unwrapped
         hull = env.hull
         legs = env.legs
+        
+        # move hull up slightly to prevent legs from clipping into the ground
+        hull.position += b2Vec2(0, 0.2)
 
         # all of these constants are defined here:
         # https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L31
@@ -97,10 +101,10 @@ class StandReward(Wrapper):
         LEG_H = 34 / SCALE
 
         # hip lim: (-0.8, 1.1)
-        HIP_SAMPLE_LIM = (-0.7, 0.7)
+        HIP_SAMPLE_LIM = (-0.5, 0.5)
         # knee lim: (-1.6, -0.1)
-        KNEE_SAMPLE_LIM = (-1, -0.1)
-        VEL_SAMPLE_LIM = (-20.0, 20.0)
+        KNEE_SAMPLE_LIM = (-0.5, -0.1)
+        VEL_SAMPLE_LIM = (-1.0, 1.0)
 
         hull_a = hull.angle
         hull_x, hull_y = hull.position
@@ -148,5 +152,6 @@ class StandReward(Wrapper):
                 body.angularVelocity = np.random.uniform(*VEL_SAMPLE_LIM)
                 body.awake = True
 
+        # apply the changes
         obs = env.step(np.array([0, 0, 0, 0]))[0]
         return obs, info
