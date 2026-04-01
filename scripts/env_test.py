@@ -40,9 +40,10 @@ def main():
         assert wrap_env.action_space.shape is not None
         
         # random agent
-        action = wrap_env.action_space.sample()
+        # action = wrap_env.action_space.sample()
+        action = np.zeros(wrap_env.action_space.shape)
         _, _, term, trunc, _ = wrap_env.step(action)
-        print("=== Testing with action: ", action)
+        # print("=== Testing with action: ", action)
         
         if term or trunc:
             _sim_res = True

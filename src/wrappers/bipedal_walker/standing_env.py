@@ -4,6 +4,7 @@ from gymnasium import Env, Wrapper
 from gymnasium.core import ActType, ObsType
 
 import numpy as np
+import math
 
 from mdp.bipedal_walker.rewards import body_lin_vel_l2, leg_contact
 
@@ -17,9 +18,7 @@ class StandReward(Wrapper):
         super().__init__(env)
 
     def _compute_stand_rew(
-        self,
-        obs: np.ndarray,
-        terminated: bool
+        self, obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float]]:
         """
         Observation layout (24 elements):
@@ -72,8 +71,7 @@ class StandReward(Wrapper):
         return sum(components.values()), components
 
     def step(
-        self,
-        action: Any
+        self, action: Any
     ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
         obs: np.ndarray
         term: bool
@@ -82,17 +80,73 @@ class StandReward(Wrapper):
         rew, info["reward_terms"] = self._compute_stand_rew(obs, term)
 
         return (obs, rew, term, trunc, info)
-    
+
     def reset(
-        self,
-        *,
-        seed: int | None = None,
-        options: dict[str, Any] | None = None
+        self, *, seed=None, options=None
     ) -> tuple[Any, dict[str, Any]]:
         obs, info = super().reset(seed=seed, options=options)
-        
-        for leg in self.unwrapped.legs:
-            # TODO: add joint randomization here
-            pass
-        
+
+        env = self.unwrapped
+        hull = env.hull
+        legs = env.legs
+
+        # all of these constants are defined here:
+        # https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L31
+        SCALE = 30.0
+        LEG_DOWN = -8 / SCALE
+        LEG_H = 34 / SCALE
+
+        # hip lim: (-0.8, 1.1)
+        HIP_SAMPLE_LIM = (-0.7, 0.7)
+        # knee lim: (-1.6, -0.1)
+        KNEE_SAMPLE_LIM = (-1, -0.1)
+        VEL_SAMPLE_LIM = (-20.0, 20.0)
+
+        hull_a = hull.angle
+        hull_x, hull_y = hull.position
+
+        # reference angles baked at joint creation: bodyB.angle - bodyA.angle
+        # https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L459
+        # pair 0 (i=-1): hip_ref = -0.05, knee_ref = 0
+        # pair 1 (i=+1): hip_ref = +0.05, knee_ref = 0
+        hip_refs = [-0.05, 0.05]
+
+        for pair in range(2):
+            upper = legs[pair * 2]
+            lower = legs[pair * 2 + 1]
+
+            hip_angle = np.random.uniform(*HIP_SAMPLE_LIM)
+            knee_angle = np.random.uniform(*KNEE_SAMPLE_LIM)
+
+            # world-space body angles via joint.angle = bB.angle - bA.angle - refAngle
+            upper_a = hull_a + hip_refs[pair] + hip_angle
+            lower_a = upper_a + 0.0 + knee_angle  # knee ref = 0
+
+            # hip anchor world pos (hull local anchor = (0, LEG_DOWN))
+            hip_wx = hull_x - LEG_DOWN * math.sin(hull_a)
+            hip_wy = hull_y + LEG_DOWN * math.cos(hull_a)
+
+            # upper leg center (its local anchor to hip = (0, LEG_H/2))
+            upper_x = hip_wx + (LEG_H / 2) * math.sin(upper_a)
+            upper_y = hip_wy - (LEG_H / 2) * math.cos(upper_a)
+
+            # knee anchor world pos (upper leg local anchor = (0, -LEG_H/2))
+            knee_wx = upper_x + (LEG_H / 2) * math.sin(upper_a)
+            knee_wy = upper_y - (LEG_H / 2) * math.cos(upper_a)
+
+            # lower leg center (its local anchor to knee = (0, LEG_H/2))
+            lower_x = knee_wx + (LEG_H / 2) * math.sin(lower_a)
+            lower_y = knee_wy - (LEG_H / 2) * math.cos(lower_a)
+
+            for body, bx, by, ba in [
+                (upper, upper_x, upper_y, upper_a),
+                (lower, lower_x, lower_y, lower_a),
+            ]:
+                body.position = (bx, by)
+                body.angle = ba
+                body.linearVelocity = (0, 0)
+                body.angularVelocity = np.random.uniform(*VEL_SAMPLE_LIM)
+                body.awake = True
+
+        obs = env.step(np.array([0, 0, 0, 0]))[0]
         return obs, info

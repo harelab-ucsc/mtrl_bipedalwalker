@@ -11,7 +11,7 @@ from wrappers.plot_env import Plotter
 
 # =========================================
 
-EXPERIMENT_NAME = "stand_1-16_15_47-2026_03_31"
+EXPERIMENT_NAME = "stand_2-18_28_20-2026_03_31"
 MODEL_CHECKPOINT = "best/best_model"
 
 # =========================================
