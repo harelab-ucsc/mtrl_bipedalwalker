@@ -13,10 +13,20 @@ from mdp.bipedal_walker.rewards import body_lin_vel_l2, leg_contact
 class StandReward(Wrapper):
     """
     Wrapper that replaces BipedalWalker's default reward with a standing reward.
+    
+    Args:
+        env: The BipedalWalker environment to wrap.
+        ep_time: Maximum episode duration in seconds. Default: 5.
     """
 
-    def __init__(self, env: Env[ObsType, ActType]):
+    def __init__(self, env: Env[ObsType, ActType], ep_time: int = 5):
         super().__init__(env)
+        
+        # specified here: https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L30
+        FPS = 50
+        
+        self._max_steps = ep_time * FPS
+        self._step_count = 0
 
     def _compute_stand_rew(
         self, obs: np.ndarray, terminated: bool
@@ -65,7 +75,7 @@ class StandReward(Wrapper):
             ("leg_contacts", leg_contacts, 0.1),
             ("hull_ang_l2", hull_ang_l2, -0.6),  # penalize deviation from 0
             ("down_firing_lidar", down_firing_lidar, 0.3),
-            ("termination", termination, -10.0),
+            ("termination", termination, -100.0),
         ]
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
@@ -74,17 +84,20 @@ class StandReward(Wrapper):
     def step(
         self, action: Any
     ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
-        obs: np.ndarray
-        term: bool
+        # step environment
         obs, rew, term, trunc, info = super().step(action)
-
+        
+        # detect truncation
+        self._step_count += 1
+        trunc = trunc or self._step_count >= self._max_steps
         rew, info["reward_terms"] = self._compute_stand_rew(obs, term)
-
-        return (obs, rew, term, trunc, info)
+        
+        return obs, rew, term, trunc, info
 
     def reset(
         self, *, seed=None, options=None
     ) -> tuple[Any, dict[str, Any]]:
+        self._step_count = 0
         obs, info = super().reset(seed=seed, options=options)
 
         env = self.unwrapped
@@ -102,17 +115,17 @@ class StandReward(Wrapper):
         # Mode 1: stand -> keep balancing (random standing position + some hull velocity)
 
         MODE = np.random.choice([0,1])
-        # MODE = 0
+        # MODE = 1
 
         # hip lim: (-0.8, 1.1)
         HIP_SAMPLE_LIM = (-0.5, 0.5) if MODE == 0 else (-0.3, 1.1)
         # knee lim: (-1.6, -0.1)
-        KNEE_SAMPLE_LIM = (-0.5, -0.1) if MODE == 0 else (-1.6, -1.4)
+        KNEE_SAMPLE_LIM = (-0.3, -0.1) if MODE == 0 else (-1.6, -1.4)
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
-        HULL_Y_SAMPLE_LIM = (0.2, 1.0) if MODE == 0 else (-0.4, 0.0)
-        HULL_VEL_X_SAMPLE_LIM = (-2, 5) if MODE == 0 else (-1, 1)
-        HULL_VEL_Y_SAMPLE_LIM = (-0.2, 0.2)
+        HULL_Y_SAMPLE_LIM = (0.2, 0.5) if MODE == 0 else (-0.5, 0.0)
+        HULL_VEL_X_SAMPLE_LIM = (-2, 2) if MODE == 0 else (-0.5, 0.5)
+        HULL_VEL_Y_SAMPLE_LIM = (-0.5, 0.5)
         
         # move hull up slightly to prevent legs from clipping into the ground
         hull.position += b2Vec2(0, np.random.uniform(*HULL_Y_SAMPLE_LIM))

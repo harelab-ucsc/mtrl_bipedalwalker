@@ -12,7 +12,7 @@ from wrappers.plot_env import Plotter
 
 # =========================================
 
-EXPERIMENT_NAME = "stand_4-12_37_38-2026_04_01"
+EXPERIMENT_NAME = "stand_6-13_58_03-2026_04_01"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
