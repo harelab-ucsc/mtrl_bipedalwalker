@@ -29,8 +29,8 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "stand_10" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
-TIMESTEPS = 250 * 2048 * 14
+EXPERIMENT_NAME = "stand_11" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+TIMESTEPS = 300 * 2048 * 14
 
 # =========================================
 
@@ -40,7 +40,7 @@ def main():
 
     def make_env():
         env = gym.make("BipedalWalker-v3")
-        env = Monitor(StandReward(env))
+        env = Monitor(StandReward(env, disturbance_freq=5, disturbance_force=((-3, 5), (0, 0.5))))
         return env
 
     train_env = SubprocVecEnv([make_env for _ in range(14)])
@@ -62,6 +62,7 @@ def main():
         train_env,
         verbose=0,
         learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
+        n_epochs=20,
         ent_coef=0.005,
         device=torch.device("cpu"),
     )

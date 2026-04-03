@@ -74,8 +74,8 @@ class StandReward(Wrapper):
         hull_ang_vel = abs(obs[1]) ** 2
         leg_contacts = leg_contact([obs[8], obs[13]])
         hull_ang_l2 = obs[0] ** 2
-        # down_firing_lidar = 1 / max(min(obs[14:]), 0.001)
         termination = 1 if terminated else 0
+        joint_vel = np.mean([obs[5], obs[7], obs[10], obs[12]])
         
         # offset by 4, measured empirically
         body_height = self.unwrapped.hull.position.y - 4 
@@ -88,9 +88,10 @@ class StandReward(Wrapper):
         rewards_cfg: list[tuple[str, float, float]] = [
             ("x_vel_l2", x_vel_l2, -0.2),
             ("hull_ang_vel", hull_ang_vel, -0.2),  # penalize deviation from 0
-            ("leg_contacts", leg_contacts, 0.1),
-            ("hull_ang_l2", hull_ang_l2, -1.0),  # penalize deviation from 0
+            ("leg_contacts", leg_contacts, 0.05),
+            ("hull_ang_l2", hull_ang_l2, -1.5),  # penalize deviation from 0
             ("down_firing_lidar", body_height, 0.05),  # reward standing tall
+            # ("joint_vel", joint_vel, -0.01),  # minimize joint velocity
             ("termination", termination, -50.0),
         ]
 
