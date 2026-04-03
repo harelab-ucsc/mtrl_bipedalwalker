@@ -15,7 +15,6 @@ _sim_paused = False
 _sim_step = False
 _sim_res = False
 
-
 def main():
     global _sim_paused, _sim_step, _sim_res
     
@@ -24,11 +23,15 @@ def main():
     
     print("Loading environments...")
     
-    env = make("BipedalWalker-v3", render_mode="human")
+    env = make("BipedalWalker-v3", render_mode="rgb_array")  # no autodisplay, we'll use our own wrapper render
     
-    wrap_env = StandReward(env)
+    wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-5, 7), (-0.5, 1)))
     if DRAW_PLOTS:
         wrap_env = Plotter(wrap_env)
+        
+    pygame.init()
+    screen = pygame.display.set_mode((600, 400))
+    clock = pygame.time.Clock()
     
     wrap_env.reset(seed=SEED)
     wrap_env.action_space.seed(SEED)
@@ -50,13 +53,22 @@ def main():
         assert wrap_env.action_space.shape is not None
         
         # random agent
-        # action = wrap_env.action_space.sample()
+        action = wrap_env.action_space.sample()
         
         # zero agent
-        action = np.zeros(wrap_env.action_space.shape)
+        # action = np.zeros(wrap_env.action_space.shape)
         
         _, _, term, trunc, _ = wrap_env.step(action)
         # print("=== Testing with action: ", action)
+        
+        # manually render
+        frame = wrap_env.render()
+        if frame is not None:
+            surf = pygame.surfarray.make_surface(frame.transpose(1, 0, 2)) # type: ignore
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+        
+        clock.tick(50)
         
         if term or trunc:
             _sim_res = True

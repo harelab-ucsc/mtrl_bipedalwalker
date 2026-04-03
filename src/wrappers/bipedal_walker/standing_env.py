@@ -17,16 +17,28 @@ class StandReward(Wrapper):
     Args:
         env: The BipedalWalker environment to wrap.
         ep_time: Maximum episode duration in seconds. Default: 5.
+        disturbance_freq: Frequency of adding external force disturbance in seconds. -1 means no disturbance. Default: -1
+        disturbance_force: Range of forces to add disturbances, formatted as ((x_min, x_max), (y_min, y_max)). Default: ((0,0),(0,0))
     """
 
-    def __init__(self, env: Env[ObsType, ActType], ep_time: int = 5):
+    def __init__(
+        self,
+        env: Env[ObsType, ActType],
+        ep_time: int = 10,
+        disturbance_freq: int = -1,
+        disturbance_force: tuple[tuple[float, float], tuple[float, float]] = ((0,0), (0,0))
+    ):
         super().__init__(env)
-        
+
         # specified here: https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L30
         FPS = 50
-        
-        self._max_steps = ep_time * FPS
-        self._step_count = 0
+
+        self._max_steps: int = ep_time * FPS
+        self._step_count: int = 0
+        self._disturb_freq: int = disturbance_freq * FPS
+        self._disturb_force: tuple[tuple[float, float], tuple[float, float]] = disturbance_force
+        self._last_disturbance: tuple[float, float] | None = None
+        self._disturbance_display_frames: int = 0
 
     def _compute_stand_rew(
         self, obs: np.ndarray, terminated: bool
@@ -62,8 +74,12 @@ class StandReward(Wrapper):
         hull_ang_vel = abs(obs[1]) ** 2
         leg_contacts = leg_contact([obs[8], obs[13]])
         hull_ang_l2 = obs[0] ** 2
-        down_firing_lidar = obs[14]
+        # down_firing_lidar = 1 / max(min(obs[14:]), 0.001)
         termination = 1 if terminated else 0
+        
+        # offset by 4, measured empirically
+        body_height = self.unwrapped.hull.position.y - 4 
+        body_height = body_height * abs(body_height)  # get signed square value
 
         # normalize some rewards
         hull_ang_l2 /= np.pi / 2  # from ±90deg -> ±1
@@ -73,9 +89,9 @@ class StandReward(Wrapper):
             ("x_vel_l2", x_vel_l2, -0.2),
             ("hull_ang_vel", hull_ang_vel, -0.2),  # penalize deviation from 0
             ("leg_contacts", leg_contacts, 0.1),
-            ("hull_ang_l2", hull_ang_l2, -0.6),  # penalize deviation from 0
-            ("down_firing_lidar", down_firing_lidar, 0.3),
-            ("termination", termination, -100.0),
+            ("hull_ang_l2", hull_ang_l2, -1.0),  # penalize deviation from 0
+            ("down_firing_lidar", body_height, 0.05),  # reward standing tall
+            ("termination", termination, -50.0),
         ]
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
@@ -92,12 +108,79 @@ class StandReward(Wrapper):
         trunc = trunc or self._step_count >= self._max_steps
         rew, info["reward_terms"] = self._compute_stand_rew(obs, term)
         
+        # add random forces every  if specified
+        if self._disturbance_display_frames > 0:
+            self._disturbance_display_frames -= 1
+
+        if self._disturb_freq > 0 and self._step_count % self._disturb_freq == 0:
+            hull = self.unwrapped.hull
+            force = b2Vec2(
+                np.random.uniform(*self._disturb_force[0]),
+                np.random.uniform(*self._disturb_force[1])
+            )
+            hull.linearVelocity += force
+            self._last_disturbance = (force.x, force.y)
+            self._disturbance_display_frames = 10
+        
         return obs, rew, term, trunc, info
+
+    def render(self):
+        result = super().render()  # gets rgb_array frame with base rendering done
+
+        if self._last_disturbance is None or self._disturbance_display_frames <= 0:
+            return result
+
+        import pygame
+        env = self.unwrapped
+        if not hasattr(env, 'surf') or env.surf is None:
+            return result
+
+        self._draw_disturbance_arrow(pygame, env)
+
+        # re-grab the frame after drawing on surf
+        return np.transpose(
+            np.array(pygame.surfarray.pixels3d(env.surf)), axes=(1, 0, 2)
+        )[:, -600:]
+
+    def _draw_disturbance_arrow(self, pygame, env):
+        SCALE = 30.0
+        VIEWPORT_H = 400
+
+        hull_x, hull_y = env.hull.position
+        # surf is already vertically flipped after super().render()
+        sx = hull_x * SCALE
+        sy = VIEWPORT_H - hull_y * SCALE
+
+        fx, fy = self._last_disturbance
+        mag = math.sqrt(fx * fx + fy * fy)
+        if mag < 1e-6:
+            return
+
+        color = (255, 0, 0)
+
+        ARROW_SCALE = 10
+        dsx, dsy = fx, -fy
+        ex = sx + dsx * ARROW_SCALE
+        ey = sy + dsy * ARROW_SCALE
+
+        pygame.draw.line(env.surf, color, (int(sx), int(sy)), (int(ex), int(ey)), 2)
+
+        head_back, head_width = 5, 3
+        nx, ny = fx / mag, fy / mag  # unit vec for arrowhead only
+        psx, psy = ny, -nx           # perpendicular in screen space
+        p1 = (int(ex), int(ey))
+        p2 = (int(ex - nx * head_back + psx * head_width),
+              int(ey + ny * head_back + psy * head_width))
+        p3 = (int(ex - nx * head_back - psx * head_width),
+              int(ey + ny * head_back - psy * head_width))
+        pygame.draw.polygon(env.surf, color, [p1, p2, p3])
 
     def reset(
         self, *, seed=None, options=None
     ) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0
+        self._last_disturbance = None
+        self._disturbance_display_frames = 0
         obs, info = super().reset(seed=seed, options=options)
 
         env = self.unwrapped
@@ -115,20 +198,23 @@ class StandReward(Wrapper):
         # Mode 1: stand -> keep balancing (random standing position + some hull velocity)
 
         MODE = np.random.choice([0,1])
-        # MODE = 1
 
         # hip lim: (-0.8, 1.1)
-        HIP_SAMPLE_LIM = (-0.5, 0.5) if MODE == 0 else (-0.3, 1.1)
+        HIP_SAMPLE_LIM = (-0.5, 0.5) if MODE == 0 else (-0.8, 1.1)
         # knee lim: (-1.6, -0.1)
-        KNEE_SAMPLE_LIM = (-0.3, -0.1) if MODE == 0 else (-1.6, -1.4)
+        KNEE_SAMPLE_LIM = (-0.3, -0.1) if MODE == 0 else (-1.6, -0.1)
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
-        HULL_Y_SAMPLE_LIM = (0.2, 0.5) if MODE == 0 else (-0.5, 0.0)
-        HULL_VEL_X_SAMPLE_LIM = (-2, 2) if MODE == 0 else (-0.5, 0.5)
+        HULL_Y_SAMPLE_LIM = (0.3, 0.6) if MODE == 0 else (0.1, 0.3)
+        HULL_X_SAMPLE_LIM = (5.0, 20.0)
+        HULL_VEL_X_SAMPLE_LIM = (-3, 5)
         HULL_VEL_Y_SAMPLE_LIM = (-0.5, 0.5)
         
         # move hull up slightly to prevent legs from clipping into the ground
-        hull.position += b2Vec2(0, np.random.uniform(*HULL_Y_SAMPLE_LIM))
+        hull.position += b2Vec2(
+            np.random.uniform(*HULL_X_SAMPLE_LIM),
+            np.random.uniform(*HULL_Y_SAMPLE_LIM)
+        )
         hull.linearVelocity += b2Vec2(
             np.random.uniform(*HULL_VEL_X_SAMPLE_LIM),
             np.random.uniform(*HULL_VEL_Y_SAMPLE_LIM)

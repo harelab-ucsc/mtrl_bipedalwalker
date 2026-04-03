@@ -29,8 +29,8 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "stand_6" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
-TIMESTEPS = 200 * 2048 * 14
+EXPERIMENT_NAME = "stand_10" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+TIMESTEPS = 250 * 2048 * 14
 
 # =========================================
 
@@ -61,7 +61,7 @@ def main():
         "MlpPolicy",
         train_env,
         verbose=0,
-        learning_rate=LinearSchedule(3e-4, 4e-5, 0.5),
+        learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
         ent_coef=0.005,
         device=torch.device("cpu"),
     )

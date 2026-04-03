@@ -12,7 +12,8 @@ from wrappers.plot_env import Plotter
 
 # =========================================
 
-EXPERIMENT_NAME = "stand_6-13_58_03-2026_04_01"
+# EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
+EXPERIMENT_NAME = "stand_9-21_15_49-2026_04_01"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
@@ -34,11 +35,15 @@ def main():
     
     # load env
     print("Loading environments...")
-    env = make("BipedalWalker-v3", render_mode="human")
+    env = make("BipedalWalker-v3", render_mode="rgb_array")
     
-    wrap_env = StandReward(env)
+    wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 7), (-0.5, 1)))
     if DRAW_PLOTS:
         wrap_env = Plotter(wrap_env)
+    
+    pygame.init()
+    screen = pygame.display.set_mode((600, 400))
+    clock = pygame.time.Clock()
     
     obs, _ = wrap_env.reset()
     
@@ -74,6 +79,15 @@ def main():
         action, _states = model.predict(obs)        
         obs, rewards, term, trunc, _ = wrap_env.step(action)
         total_rewards += float(rewards)
+        
+        # manually render
+        frame = wrap_env.render()
+        if frame is not None:
+            surf = pygame.surfarray.make_surface(frame.transpose(1, 0, 2)) # type: ignore
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+        
+        clock.tick(50)
         
         if term or trunc:
             _sim_res = True
