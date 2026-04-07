@@ -30,7 +30,7 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "hop_1" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "hop_2" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 TIMESTEPS = 200 * 2048 * 14
 
 # =========================================
@@ -68,6 +68,7 @@ def main():
         train_env,
         verbose=0,
         # learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
+        learning_rate=1.22e-4,  # log scale midpoint between the low and high of the scheduler
         n_epochs=15,
         batch_size=64,
         ent_coef=0.005,
