@@ -7,27 +7,35 @@ from Box2D import b2Vec2
 import numpy as np
 import math
 
-from mdp.bipedal_walker.rewards import body_lin_vel_l2, leg_contact
+from gymnasium import spaces
 
 
-class StandReward(Wrapper):
-    """
-    Wrapper that replaces BipedalWalker's default reward with a standing reward.
-    
-    Args:
-        env: The BipedalWalker environment to wrap.
-        ep_time: Maximum episode duration in seconds. Default: 10.
-        disturbance_freq: Frequency of adding external force disturbance in seconds. -1 means no disturbance. Default: -1
-        disturbance_force: Range of forces to add disturbances, formatted as ((x_min, x_max), (y_min, y_max)). Default: ((0,0),(0,0))
-    """
-
+class HopReward(Wrapper):
     def __init__(
         self,
         env: Env[ObsType, ActType],
         ep_time: int = 10,
-        disturbance_freq: int = -1,
-        disturbance_force: tuple[tuple[float, float], tuple[float, float]] = ((0,0), (0,0))
+        man_vel_ctrl: bool = False,
+        vel_switching_freq: int = 10,
+        vel_sample_range: tuple[float, float] = (-2.5, 2.5),
+        vel_sample_zero: float = 0.2,
     ):
+        """
+        Wrapper that replaces BipedalWalker's default reward with a hopping reward.
+
+        Args:
+        env: The BipedalWalker environment to wrap.
+
+        ep_time: Maximum episode duration in seconds. Default: 15.
+
+        man_vel_ctrl: Manual velocity control. Keep False for training. Default: False.
+
+        vel_switching_freq: Frequency in seconds in which velocity command is switched. This only has an effect when man_vel_ctrl is False. Default: 10.
+
+        vel_sample_range: The range from which to sample command velocity from. This only has an effect when man_vel_ctrl is False. Default: [-1, 1].
+
+        vel_sample_zero: Probability in sampling a 0 velocity command.  This only has an effect when man_vel_ctrl is False. Default: 0.2.
+        """
         super().__init__(env)
 
         # specified here: https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L30
@@ -35,12 +43,24 @@ class StandReward(Wrapper):
 
         self._max_steps: int = ep_time * FPS
         self._step_count: int = 0
-        self._disturb_freq: int = disturbance_freq * FPS
-        self._disturb_force: tuple[tuple[float, float], tuple[float, float]] = disturbance_force
-        self._last_disturbance: tuple[float, float] | None = None
-        self._disturbance_display_frames: int = 0
 
-    def _compute_stand_rew(
+        self._man_vel_ctrl: bool = man_vel_ctrl
+        self._vel_switch_steps: int = vel_switching_freq * FPS
+        self._vel_sample_range: tuple[float, float] = vel_sample_range
+        self._vel_sample_zero: float = vel_sample_zero
+
+        # initialize velocity commands
+        self._cmd_vel: float = 0
+        # TODO: implement a cmd_vel smoothing buffer if necessary (to smoothly switch btwn one command vel to another)
+        
+        base = self.env.observation_space
+        self.observation_space = spaces.Box(
+            low=np.append(base.low, -np.inf), # type: ignore
+            high=np.append(base.high, np.inf), # type: ignore
+            dtype=np.float64
+        )
+
+    def _compute_hop_rew(
         self, obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float]]:
         """
@@ -60,23 +80,23 @@ class StandReward(Wrapper):
             [12]      knee_2_vel
             [13]      leg_2_contact
             [14:24]   lidar
-
-        Compute standing reward following these reward terms:
-            - Minimize horizontal and vertical velocity (L2)
-            - Minimize rotational velocity (squared)
-            - Feet must be contacting ground (both)
-            - Must look straight forward (hull_ang L2, normalized by pi/2)
-            - Minimize height error from TARGET_HEIGHT=2*LEG_H above terrain
-            - Minimize mean joint velocity across all four joints
-            - Penalize termination (binary)
         """
 
-        vel_l2 = body_lin_vel_l2((obs[2], obs[3]))
+        # velocity tracking error
+        vel_tracking = (self._cmd_vel - obs[2]) ** 2
+        # fine velocity tracking error
+        vel_tracking_fine = 1 - np.tanh(2 * (self._cmd_vel - obs[2]) ** 2)
+        # hull angle velocity
         hull_ang_vel = abs(obs[1]) ** 2
-        leg_contacts = leg_contact((obs[8], obs[13]))
+        # strict 1 leg contact
+        leg_1_contact = 1 if obs[8] == 1 and obs[13] == 0 else 0
+        leg_2_contact = 1 if obs[13] == 1 else 0
+        # hull angle deviation from 0
         hull_ang_l2 = obs[0] ** 2
+        # termination
         termination = 1 if terminated else 0
-        joint_vel = abs(np.mean([obs[5], obs[7], obs[10], obs[12]]))
+        # minimize L2 joint_velocity
+        joint_vel_l2 = (np.mean([obs[5], obs[7], obs[10], obs[12]])) ** 2
         
         # height above ground (interpolated terrain surface)
         env: Any = self.unwrapped
@@ -87,17 +107,23 @@ class StandReward(Wrapper):
         TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
         body_height_err = (TARGET_HEIGHT - height_above_ground) ** 2
 
-        # normalize some rewards
-        hull_ang_l2 /= np.pi / 2  # from ±90deg -> ±1
-        hull_ang_vel /= 1e-2  # emperically measured
-
         rewards_cfg: list[tuple[str, Any, float]] = [
-            ("vel_l2", vel_l2, -0.2),
-            ("hull_ang_vel", hull_ang_vel, -0.1),  # penalize deviation from 0
-            ("leg_contacts", leg_contacts, 0.1),
-            ("hull_ang_l2", hull_ang_l2, -1.0),  # penalize deviation from 0
-            ("down_firing_lidar", body_height_err, -0.5),  # reward standing tall
-            ("joint_vel", joint_vel, -0.1),  # minimize joint velocity
+            # coarse velocity tracking penalty
+            ("vel_tracking", vel_tracking, -0.3),
+            # fine velocity tracking reward
+            ("vel_tracking_fine", vel_tracking_fine, 1.0),
+            # penalize rotational velocity
+            ("hull_ang_vel", hull_ang_vel, -0.1),
+            # reward strict single-leg contact
+            ("leg_1_contact", leg_1_contact, 0.2),
+            ("leg_2_contact", leg_2_contact, -0.2),
+            # penalize deviation from upright
+            ("hull_ang_l2", hull_ang_l2, -0.5),
+            # penalize joint velocity
+            ("joint_vel_l2", joint_vel_l2, -0.05),
+            # penalize body height error (should stay at roughly same height)
+            ("body_height_err", body_height_err, -0.2),
+            # penalize dying
             ("termination", termination, -20.0),
         ]
 
@@ -109,125 +135,131 @@ class StandReward(Wrapper):
     ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
         # step environment
         obs, rew, term, trunc, info = super().step(action)
-        
+
         # detect truncation
         self._step_count += 1
         trunc = trunc or self._step_count >= self._max_steps
-        rew, info["reward_terms"] = self._compute_stand_rew(obs, term)
-        
-        # add random forces every  if specified
-        if self._disturbance_display_frames > 0:
-            self._disturbance_display_frames -= 1
+        rew, info["reward_terms"] = self._compute_hop_rew(obs, term)
 
-        if self._disturb_freq > 0 and self._step_count % self._disturb_freq == 0 and self._step_count > 0:
-            _env: Any = self.unwrapped
-            hull = _env.hull
-            force = b2Vec2(
-                np.random.uniform(*self._disturb_force[0]),
-                np.random.uniform(*self._disturb_force[1])
-            )
-            hull.linearVelocity += force
-            self._last_disturbance = (force.x, force.y)
-            self._disturbance_display_frames = 10
-        
+        # change command velocity if specified
+        if (
+            self._vel_switch_steps < self._max_steps
+            and self._step_count % self._vel_switch_steps == 0
+        ):
+            if np.random.random() > self._vel_sample_zero:
+                self._cmd_vel = np.random.uniform(*self._vel_sample_range)
+            else:
+                self._cmd_vel = 0.0
+                
+        # append command velocity to observations
+        obs = np.append(obs, np.float64(self._cmd_vel))
+
         return obs, rew, term, trunc, info
 
     def render(self):
         result = super().render()  # gets rgb_array frame with base rendering done
 
-        if self._last_disturbance is None or self._disturbance_display_frames <= 0:
-            return result
-
         import pygame
+
         env: Any = self.unwrapped
-        if not hasattr(env, 'surf') or env.surf is None:
+        if not hasattr(env, "surf") or env.surf is None:
             return result
 
-        self._draw_disturbance_arrow(pygame, env)
+        self._draw_velocity_arrows(pygame, env)
 
         # re-grab the frame after drawing on surf
         return np.transpose(
             np.array(pygame.surfarray.pixels3d(env.surf)), axes=(1, 0, 2)
         )[:, -600:]
 
-    def _draw_disturbance_arrow(self, pygame, env):
+    def _draw_velocity_arrows(self, pygame, env):
+        # TODO: pass or cache current obs so real_vel_x is accessible here
+        unwrapped: Any = self.unwrapped
+        real_vel_x: float = unwrapped.hull.linearVelocity.x
+
+
+        # green = command
+        self._draw_velocity_arrow(pygame, env, self._cmd_vel, color=(9, 176, 12), y_offset=-10)
+        # blue = real
+        self._draw_velocity_arrow(pygame, env, real_vel_x, color=(71, 126, 255))
+
+    def _draw_velocity_arrow(
+        self,
+        pygame,
+        env,
+        vel_x: float,
+        color: tuple,
+        y_offset: int = 0
+    ):
         SCALE = 30.0
         VIEWPORT_H = 400
+        ARROW_SCALE = 2
+        
+        HEAD_LEN = 10
+        HEAD_WIDTH = 5
 
         hull_x, hull_y = env.hull.position
-        # surf is already vertically flipped after super().render()
         sx = hull_x * SCALE
-        sy = VIEWPORT_H - hull_y * SCALE
+        sy = VIEWPORT_H - hull_y * SCALE - 40 + y_offset
 
-        assert self._last_disturbance is not None
-        fx, fy = self._last_disturbance
-        mag = math.sqrt(fx * fx + fy * fy)
-        if mag < 1e-6:
+        if abs(vel_x) < 1e-6:
             return
 
-        color = (255, 0, 0)
+        sign = math.copysign(1.0, vel_x)   # direction
+        mag = abs(vel_x) * ARROW_SCALE * 10 # pixel length of shaft
 
-        ARROW_SCALE = 10
-        dsx, dsy = fx, -fy
-        ex = sx + dsx * ARROW_SCALE
-        ey = sy + dsy * ARROW_SCALE
+        ex = sx + sign * mag
+        ey = sy
 
-        pygame.draw.line(env.surf, color, (int(sx), int(sy)), (int(ex), int(ey)), 2)
+        # shorten shaft so it ends at base of head, not tip
+        shaft_ex = ex - sign * HEAD_LEN
+        pygame.draw.line(env.surf, color, (int(sx), int(sy)), (int(shaft_ex), int(ey)), 2)
 
-        head_back, head_width = 5, 3
-        nx, ny = fx / mag, fy / mag  # unit vec for arrowhead only
-        psx, psy = ny, -nx           # perpendicular in screen space
+        # constant-size arrowhead: tip at (ex, ey), base perpendicular in screen y
         p1 = (int(ex), int(ey))
-        p2 = (int(ex - nx * head_back + psx * head_width),
-              int(ey + ny * head_back + psy * head_width))
-        p3 = (int(ex - nx * head_back - psx * head_width),
-              int(ey + ny * head_back - psy * head_width))
+        p2 = (int(ex - sign * HEAD_LEN), int(ey - HEAD_WIDTH))
+        p3 = (int(ex - sign * HEAD_LEN), int(ey + HEAD_WIDTH))
+
         pygame.draw.polygon(env.surf, color, [p1, p2, p3])
 
-    def reset(
-        self, *, seed=None, options=None
-    ) -> tuple[Any, dict[str, Any]]:
+    def reset(self, *, seed=None, options=None) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0
-        self._last_disturbance = None
-        self._disturbance_display_frames = 0
         obs, info = super().reset(seed=seed, options=options)
+
+        # change command velocity
+        if np.random.random() > self._vel_sample_zero:
+            self._cmd_vel = np.random.uniform(*self._vel_sample_range)
+        else:
+            self._cmd_vel = 0.0
 
         env: Any = self.unwrapped
         hull = env.hull
         legs = env.legs
-        
+
         # all of these constants are defined here:
         # https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L31
         SCALE = 30.0
         LEG_DOWN = -8 / SCALE
         LEG_H = 34 / SCALE
-        
-        # two differen type of reset:
-        # Mode 0: sit -> stand (random crouching position to standing)
-        # Mode 1: stand -> keep balancing (random standing position + some hull velocity)
-
-        MODE = np.random.choice([0,1])
 
         # hip lim: (-0.8, 1.1)
-        HIP_SAMPLE_LIM = (-0.5, 0.5) if MODE == 0 else (-0.8, 1.1)
+        HIP_SAMPLE_LIM = (-0.3, 0.3)
         # knee lim: (-1.6, -0.1)
-        KNEE_SAMPLE_LIM = (-0.3, -0.1) if MODE == 0 else (-1.6, -0.1)
+        KNEE_SAMPLE_LIM = (-0.3, -0.1)
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
-        HULL_Y_SAMPLE_LIM = (0.3, 0.5)
+        HULL_Y_SAMPLE_LIM = (0.2, 0.3)
         HULL_X_SAMPLE_LIM = (3.0, 8.0)
-        HULL_ROT_SAMPLE_LIM = (-0.5, 0.5)
-        HULL_VEL_X_SAMPLE_LIM = (-5, 5)
-        HULL_VEL_Y_SAMPLE_LIM = (-0.5, 0.5)
-        
-        # move hull up slightly to prevent legs from clipping into the ground
+        HULL_ROT_SAMPLE_LIM = (-0.1, 0.1)
+        HULL_VEL_X_SAMPLE_LIM = (-0.2, 0.2)
+        HULL_VEL_Y_SAMPLE_LIM = (0, 0)
+
         hull.position += b2Vec2(
-            np.random.uniform(*HULL_X_SAMPLE_LIM),
-            np.random.uniform(*HULL_Y_SAMPLE_LIM)
+            np.random.uniform(*HULL_X_SAMPLE_LIM), np.random.uniform(*HULL_Y_SAMPLE_LIM)
         )
         hull.linearVelocity += b2Vec2(
             np.random.uniform(*HULL_VEL_X_SAMPLE_LIM),
-            np.random.uniform(*HULL_VEL_Y_SAMPLE_LIM)
+            np.random.uniform(*HULL_VEL_Y_SAMPLE_LIM),
         )
         hull.angle += np.random.uniform(*HULL_ROT_SAMPLE_LIM)
 
@@ -280,4 +312,8 @@ class StandReward(Wrapper):
 
         # apply the changes
         obs = env.step(np.array([0, 0, 0, 0]))[0]
+        
+        # append command velocity to observations
+        obs = np.append(obs, np.float64(self._cmd_vel))
+        
         return obs, info

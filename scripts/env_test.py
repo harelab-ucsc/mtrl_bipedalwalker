@@ -7,9 +7,10 @@ import os
 
 from wrappers.plot_env import Plotter
 from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.bipedal_walker.hopping_env import HopReward
 
 SEED = 42
-DRAW_PLOTS = False
+DRAW_PLOTS = True
 
 _sim_paused = False
 _sim_step = False
@@ -25,7 +26,7 @@ def main():
     
     env = make("BipedalWalker-v3", render_mode="rgb_array")  # no autodisplay, we'll use our own wrapper render
     
-    wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-5, 7), (-0.5, 1)))
+    wrap_env = HopReward(env, ep_time=15, vel_switching_freq=3)
     if DRAW_PLOTS:
         wrap_env = Plotter(wrap_env)
         
@@ -36,12 +37,23 @@ def main():
     wrap_env.reset(seed=SEED)
     wrap_env.action_space.seed(SEED)
     
+    # manually render
+    def render():
+        frame = wrap_env.render()
+        if frame is not None:
+            surf = pygame.surfarray.make_surface(frame.transpose(1, 0, 2)) # type: ignore
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+        
+        clock.tick(50)
+    
     while(1):
         pygame.event.pump()  # keep window alive on pause
         
         if _sim_res:
             _sim_res = False
             wrap_env.reset()
+            render()
             continue
         
         if _sim_paused:
@@ -59,16 +71,9 @@ def main():
         # action = np.zeros(wrap_env.action_space.shape)
         
         _, _, term, trunc, _ = wrap_env.step(action)
-        # print("=== Testing with action: ", action)
+        print("=== Testing with action: ", action)
         
-        # manually render
-        frame = wrap_env.render()
-        if frame is not None:
-            surf = pygame.surfarray.make_surface(frame.transpose(1, 0, 2)) # type: ignore
-            screen.blit(surf, (0, 0))
-            pygame.display.flip()
-        
-        clock.tick(50)
+        render()
         
         if term or trunc:
             _sim_res = True

@@ -19,7 +19,8 @@ import os
 
 from utils.paths import MODELS_DIR, LOGS_DIR
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
-from wrappers.bipedal_walker.standing_env import StandReward
+# from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.bipedal_walker.hopping_env import HopReward
 
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
@@ -29,8 +30,8 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "stand_11" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
-TIMESTEPS = 300 * 2048 * 14
+EXPERIMENT_NAME = "hop_1" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+TIMESTEPS = 200 * 2048 * 14
 
 # =========================================
 
@@ -40,7 +41,7 @@ def main():
 
     def make_env():
         env = gym.make("BipedalWalker-v3")
-        env = Monitor(StandReward(env, disturbance_freq=5, disturbance_force=((-3, 5), (0, 0.5))))
+        env = Monitor(HopReward(env))
         return env
 
     train_env = SubprocVecEnv([make_env for _ in range(14)])
@@ -57,13 +58,20 @@ def main():
     #     vec_env_cls=SubprocVecEnv
     # )
 
+    policy_kwargs = dict(
+        activation_fn=torch.nn.ELU,
+        net_arch=dict(pi=[256, 256, 128, 64], vf=[256, 256, 128, 64])
+    )
+
     model = PPO(
         "MlpPolicy",
         train_env,
         verbose=0,
-        learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
-        n_epochs=20,
+        # learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
+        n_epochs=15,
+        batch_size=64,
         ent_coef=0.005,
+        policy_kwargs=policy_kwargs,
         device=torch.device("cpu"),
     )
     model.set_logger(configure(str(LOGS_DIR / EXPERIMENT_NAME), ["tensorboard"]))

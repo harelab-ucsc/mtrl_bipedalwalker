@@ -8,12 +8,14 @@ from pynput.keyboard import Key, KeyCode
 
 from utils.paths import MODELS_DIR
 from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.plot_env import Plotter
+
 
 # =========================================
 
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
-EXPERIMENT_NAME = "stand_11-18_42_19-2026_04_02"
+EXPERIMENT_NAME = "hop_1-00_04_47-2026_04_07"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
@@ -37,7 +39,8 @@ def main():
     print("Loading environments...")
     env = make("BipedalWalker-v3", render_mode="rgb_array")
     
-    wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
+    # wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
+    wrap_env = HopReward(env, ep_time=15, vel_switching_freq=5)
     if DRAW_PLOTS:
         wrap_env = Plotter(wrap_env)
     
