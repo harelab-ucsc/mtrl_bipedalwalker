@@ -30,7 +30,7 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "hop_3" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "hop_4" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 TIMESTEPS = 200 * 2048 * 14
 
 # =========================================
@@ -41,7 +41,7 @@ def main():
 
     def make_env():
         env = gym.make("BipedalWalker-v3")
-        env = Monitor(HopReward(env))
+        env = Monitor(HopReward(env, vel_sample_zero=0.05))
         return env
 
     train_env = SubprocVecEnv([make_env for _ in range(14)])

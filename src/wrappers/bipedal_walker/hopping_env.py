@@ -90,7 +90,7 @@ class HopReward(Wrapper):
         # hull angle velocity
         hull_ang_vel = abs(obs[1]) ** 2
         # leg lift
-        leg_1_contact = 1 if obs[8] == 0 and obs[13] == 0 else 0  # encourage leg 1 air time
+        leg_1_contact = 1 if obs[8] == 1 and obs[13] == 0 else 0  # encourage leg 1 contact
         leg_2_contact = 1 if obs[13] == 1 else 0  # penalize any leg 2 contact
         # hull angle deviation from 0
         hull_ang_l2 = obs[0] ** 2
@@ -98,6 +98,18 @@ class HopReward(Wrapper):
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
         joint_vel_l2 = (np.mean([obs[5], obs[7], obs[10], obs[12]])) ** 2
+        
+        # height above ground (interpolated terrain surface)
+        env: Any = self.unwrapped
+        hull_x = env.hull.position.x
+        ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
+        height_above_ground = env.hull.position.y - ground_y
+        
+        # hop bonus: take the height above ground and scale it by the velocity tracking error (squared) to encorage it to jump around?
+        hop_bonus = height_above_ground * (1 - np.tanh(5 * abs(vel_err)))
+        
+        if obs[8] == 1 or obs[13] == 1:  # either foot touching → not airborne
+            hop_bonus = 0
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
@@ -113,6 +125,8 @@ class HopReward(Wrapper):
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.02),
+            # hop bonus reward
+            ("hop_bonus", hop_bonus, 0.1),
             # penalize dying
             ("termination", termination, -20.0),
         ]
