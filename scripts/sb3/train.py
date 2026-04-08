@@ -30,7 +30,7 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "hop_4" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "hop_5" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 TIMESTEPS = 200 * 2048 * 14
 
 # =========================================
@@ -60,7 +60,7 @@ def main():
 
     policy_kwargs = dict(
         activation_fn=torch.nn.ELU,
-        net_arch=dict(pi=[256, 256, 128, 64], vf=[256, 256, 128, 64])
+        net_arch=dict(pi=[256, 128, 64], vf=[256, 128, 64])
     )
 
     model = PPO(
