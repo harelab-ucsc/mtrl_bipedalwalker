@@ -86,7 +86,7 @@ class HopReward(Wrapper):
         vel_err = self._cmd_vel - obs[2]
         vel_tracking = vel_err ** 2
         # fine velocity tracking error
-        vel_tracking_fine = 1 - np.tanh(30 * vel_tracking)
+        vel_tracking_fine = 1 - np.tanh(40 * vel_tracking)
         # hull angle velocity
         hull_ang_vel = abs(obs[1]) ** 2
         # leg lift
@@ -101,18 +101,18 @@ class HopReward(Wrapper):
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
-            ("vel_tracking", vel_tracking, -0.3),
+            ("vel_tracking", vel_tracking, -0.6),
             # fine velocity tracking reward
-            ("vel_tracking_fine", vel_tracking_fine, 1.0),
+            ("vel_tracking_fine", vel_tracking_fine, 0.2),
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # reward strict single-leg contact
-            ("leg_1_contact", leg_1_contact, 0.2),
+            ("leg_1_contact", leg_1_contact, 0.1),
             ("leg_2_contact", leg_2_contact, -0.2),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
-            ("joint_vel_l2", joint_vel_l2, -0.05),
+            ("joint_vel_l2", joint_vel_l2, -0.02),
             # penalize dying
             ("termination", termination, -20.0),
         ]
