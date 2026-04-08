@@ -110,6 +110,12 @@ class HopReward(Wrapper):
         
         if obs[8] == 1 or obs[13] == 1:  # either foot touching → not airborne
             hop_bonus = 0
+        
+        # penalize being close the ground
+        # this is old code
+        TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
+        height_deficit = max(0.0, TARGET_HEIGHT - height_above_ground)
+        body_height_penalty = height_deficit ** 2
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
@@ -127,6 +133,8 @@ class HopReward(Wrapper):
             ("joint_vel_l2", joint_vel_l2, -0.02),
             # hop bonus reward
             ("hop_bonus", hop_bonus, 0.1),
+            # body height deficit
+            ("body_height", body_height_penalty, -0.3),
             # penalize dying
             ("termination", termination, -20.0),
         ]

@@ -67,8 +67,7 @@ def main():
         "MlpPolicy",
         train_env,
         verbose=0,
-        # learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
-        learning_rate=1.22e-4,  # log scale midpoint between the low and high of the scheduler
+        learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
         n_epochs=15,
         batch_size=64,
         ent_coef=0.005,
