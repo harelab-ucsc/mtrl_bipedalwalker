@@ -1,14 +1,11 @@
 import signal
 from typing import Any, SupportsFloat
 import sys, subprocess, os
-from pynput import keyboard
-from pynput.keyboard import Key, KeyCode
 
 from gymnasium import Env, Wrapper
 from gymnasium.core import ActType, ObsType
 
 import matplotlib.pyplot as plt
-import numpy as np
 
 
 WINDOW = 50
