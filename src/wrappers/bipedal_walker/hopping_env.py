@@ -128,7 +128,7 @@ class HopReward(Wrapper):
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
-            ("vel_tracking", vel_tracking, -0.1),
+            ("vel_tracking", vel_tracking, -0.2),
             # fine velocity tracking reward
             ("vel_tracking_fine", vel_tracking_fine, 0.3),
             # penalize rotational velocity
