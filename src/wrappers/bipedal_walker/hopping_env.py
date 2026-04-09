@@ -50,7 +50,7 @@ class HopReward(Wrapper):
         self._vel_sample_zero: float = vel_sample_zero
 
         # initialize velocity commands
-        self._cmd_vel: float = 0
+        self._cmd_vel_target: float = 0
         # TODO: implement a cmd_vel smoothing buffer if necessary (to smoothly switch btwn one command vel to another)
         
         base = self.env.observation_space
@@ -91,7 +91,7 @@ class HopReward(Wrapper):
         # print(env.hull)
 
         # velocity tracking error
-        vel_err = self._cmd_vel - hull_vel_x
+        vel_err = self._cmd_vel_target - hull_vel_x
         vel_tracking = vel_err ** 2
         # fine velocity tracking error
         vel_tracking_fine = 1 - np.tanh(40 * vel_tracking)
@@ -170,12 +170,12 @@ class HopReward(Wrapper):
             and self._step_count % self._vel_switch_steps == 0
         ):
             if np.random.random() > self._vel_sample_zero:
-                self._cmd_vel = np.random.uniform(*self._vel_sample_range)
+                self._cmd_vel_target = np.random.uniform(*self._vel_sample_range)
             else:
-                self._cmd_vel = 0.0
+                self._cmd_vel_target = 0.0
                 
         # append command velocity to observations
-        obs = np.append(obs, np.float64(self._cmd_vel))
+        obs = np.append(obs, np.float64(self._cmd_vel_target))
 
         return obs, rew, term, trunc, info
 
@@ -204,7 +204,7 @@ class HopReward(Wrapper):
         # print()
 
         # green = command
-        self._draw_velocity_arrow(pygame, env, self._cmd_vel, color=(9, 176, 12), y_offset=-10)
+        self._draw_velocity_arrow(pygame, env, self._cmd_vel_target, color=(9, 176, 12), y_offset=-10)
         # blue = real
         self._draw_velocity_arrow(pygame, env, real_vel_x, color=(71, 126, 255))
 
@@ -253,9 +253,9 @@ class HopReward(Wrapper):
 
         # change command velocity
         if np.random.random() > self._vel_sample_zero:
-            self._cmd_vel = np.random.uniform(*self._vel_sample_range)
+            self._cmd_vel_target = np.random.uniform(*self._vel_sample_range)
         else:
-            self._cmd_vel = 0.0
+            self._cmd_vel_target = 0.0
 
         env: Any = self.unwrapped
         hull = env.hull
@@ -339,6 +339,6 @@ class HopReward(Wrapper):
         obs = env.step(np.array([0, 0, 0, 0]))[0]
         
         # append command velocity to observations
-        obs = np.append(obs, np.float64(self._cmd_vel))
+        obs = np.append(obs, np.float64(self._cmd_vel_target))
         
         return obs, info
