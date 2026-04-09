@@ -8,6 +8,7 @@ import os
 from wrappers.plot_env import Plotter
 from wrappers.bipedal_walker.standing_env import StandReward
 from wrappers.bipedal_walker.hopping_env import HopReward
+from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
 
 SEED = 42
 DRAW_PLOTS = False
@@ -28,8 +29,8 @@ def main():
     env = make(
         "BipedalWalker-v3", render_mode="rgb_array"
     )  # no autodisplay, we'll use our own wrapper render
-
-    wrap_env = HopReward(
+    
+    wrap_env = ProprioHopReward(
         env,
         ep_time=15,
         vel_switching_freq=3,
@@ -38,6 +39,12 @@ def main():
     )
     if DRAW_PLOTS:
         wrap_env = Plotter(wrap_env)
+
+    obs = wrap_env.observation_space
+    act = wrap_env.action_space
+    
+    print(f"obs  {obs.shape}  {obs.dtype}")
+    print(f"act  {act.shape}  [{act.low[0]:.1f}, {act.high[0]:.1f}]") # type: ignore
 
     pygame.init()
     screen = pygame.display.set_mode((600, 400))

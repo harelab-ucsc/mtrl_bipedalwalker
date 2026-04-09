@@ -9,13 +9,14 @@ from pynput.keyboard import Key, KeyCode
 from utils.paths import MODELS_DIR
 from wrappers.bipedal_walker.standing_env import StandReward
 from wrappers.bipedal_walker.hopping_env import HopReward
+from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
 from wrappers.plot_env import Plotter
 
 
 # =========================================
 
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
-EXPERIMENT_NAME = "hop_forward_3-18_52_54-2026_04_08"
+EXPERIMENT_NAME = "hop_forward_4-01_03_19-2026_04_09"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
@@ -40,7 +41,7 @@ def main():
     env = make("BipedalWalker-v3", render_mode="rgb_array")
     
     # wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
-    wrap_env = HopReward(
+    wrap_env = ProprioHopReward(
         env,
         ep_time=15,
         vel_switching_freq=3,
