@@ -30,7 +30,7 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "hop_forward_2" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "hop_forward_3" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 TIMESTEPS = 200 * 2048 * 14
 
 # =========================================
@@ -69,6 +69,7 @@ def main():
         verbose=0,
         learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
         n_epochs=15,
+        n_steps=1024,
         batch_size=64,
         ent_coef=0.005,
         policy_kwargs=policy_kwargs,

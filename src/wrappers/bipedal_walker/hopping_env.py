@@ -135,7 +135,7 @@ class HopReward(Wrapper):
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # reward strict single-leg contact
             ("leg_1_contact", leg_1_contact, 0.2),
-            ("leg_2_contact", leg_2_contact, -0.6),
+            ("leg_2_contact", leg_2_contact, -1.0),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
@@ -144,7 +144,7 @@ class HopReward(Wrapper):
             # ("hop_bonus", hop_bonus, 0.1),
             
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.2),
+            ("body_height", body_height, -0.4),
             
             # penalize dying
             ("termination", termination, -150.0),
