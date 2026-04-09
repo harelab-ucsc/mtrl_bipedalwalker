@@ -281,6 +281,7 @@ class HopReward(Wrapper):
 
         # all of these constants are defined here:
         # https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L31
+        VIEWPORT_H = 400
         SCALE = 30.0
         LEG_DOWN = -8 / SCALE
         LEG_H = 34 / SCALE
@@ -292,7 +293,7 @@ class HopReward(Wrapper):
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
         HULL_Y_SAMPLE_LIM = (0.2, 0.3)
-        HULL_X_SAMPLE_LIM = (3.0, 8.0)
+        HULL_X_SAMPLE_LIM = (60.0, 75.0)
         HULL_ROT_SAMPLE_LIM = (-0.1, 0.1)
         HULL_VEL_X_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_Y_SAMPLE_LIM = (0, 0)
@@ -300,6 +301,13 @@ class HopReward(Wrapper):
         hull.position += b2Vec2(
             np.random.uniform(*HULL_X_SAMPLE_LIM), np.random.uniform(*HULL_Y_SAMPLE_LIM)
         )
+        
+        hull_x = env.hull.position.x
+        ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
+        ground_y_rel = ground_y - VIEWPORT_H / SCALE / 4
+        # move hull to above ground
+        hull.position.y += ground_y_rel
+        
         hull.linearVelocity += b2Vec2(
             np.random.uniform(*HULL_VEL_X_SAMPLE_LIM),
             np.random.uniform(*HULL_VEL_Y_SAMPLE_LIM),

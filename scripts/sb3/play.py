@@ -16,7 +16,7 @@ from wrappers.plot_env import Plotter
 # =========================================
 
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
-EXPERIMENT_NAME = "hop_forward_6-13_45_02-2026_04_09"
+EXPERIMENT_NAME = "hop_forward/hop_forward_6-13_45_02-2026_04_09"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
@@ -45,7 +45,7 @@ def main():
         env,
         ep_time=15,
         vel_switching_freq=3,
-        vel_sample_range=(0, 5),
+        vel_sample_range=(-5, 0),
         vel_sample_zero=0.05,
     )
     # wrap_env = env
@@ -67,6 +67,16 @@ def main():
     
     total_rewards = 0
     
+    # manually render
+    def render():
+        frame = wrap_env.render()
+        if frame is not None:
+            surf = pygame.surfarray.make_surface(frame.transpose(1, 0, 2))  # type: ignore
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+
+        clock.tick(50)
+    
     while(1):
         pygame.event.pump()  # keep window alive on pause
         
@@ -77,6 +87,7 @@ def main():
             
             _sim_res = False
             obs, _ = wrap_env.reset()
+            render()
             continue
         
         if _sim_paused:
@@ -91,14 +102,7 @@ def main():
         obs, rewards, term, trunc, _ = wrap_env.step(action)
         total_rewards += float(rewards)
         
-        # manually render
-        frame = wrap_env.render()
-        if frame is not None:
-            surf = pygame.surfarray.make_surface(frame.transpose(1, 0, 2)) # type: ignore
-            screen.blit(surf, (0, 0))
-            pygame.display.flip()
-        
-        clock.tick(50)
+        render()
         
         if term or trunc:
             _sim_res = True
