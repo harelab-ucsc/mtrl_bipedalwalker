@@ -67,8 +67,8 @@ class HopReward(Wrapper):
         Observation layout (24 elements):
             [0]       hull_ang
             [1]       hull_ang_vel
-            [2]       vel_x
-            [3]       vel_y
+            [2]       vel_x             DO NOT FUCKING USE!! These are NORMALIZED!!
+            [3]       vel_y             DO NOT FUCKING USE!! These are NORMALIZED!!
             [4]       hip_1_pos
             [5]       hip_1_vel
             [6]       knee_1_pos
@@ -81,62 +81,73 @@ class HopReward(Wrapper):
             [13]      leg_2_contact
             [14:24]   lidar
         """
+        
+        env: Any = self.unwrapped
+        hull_vel_x = env.hull.linearVelocity.x  # get b2body lin vel. The obs one is fucked.
+        hull_ang_vel = env.hull.angularVelocity
+        hull_ang = env.hull.angle
+        hull_x = env.hull.position.x
+        
+        # print(env.hull)
 
         # velocity tracking error
-        vel_err = self._cmd_vel - obs[2]
+        vel_err = self._cmd_vel - hull_vel_x
         vel_tracking = vel_err ** 2
         # fine velocity tracking error
         vel_tracking_fine = 1 - np.tanh(40 * vel_tracking)
         # hull angle velocity
-        hull_ang_vel = abs(obs[1]) ** 2
+        hull_ang_vel = abs(hull_ang_vel) ** 2
         # leg lift
-        leg_1_contact = 1 if obs[8] == 1 and obs[13] == 0 else 0  # encourage leg 1 contact
+        leg_1_contact = 1 if obs[8] == 1 and obs[13] == 0 else -1  # encourage leg 1 contact
         leg_2_contact = 1 if obs[13] == 1 else 0  # penalize any leg 2 contact
         # hull angle deviation from 0
-        hull_ang_l2 = obs[0] ** 2
+        hull_ang_l2 = hull_ang ** 2
         # termination
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
         joint_vel_l2 = (np.mean([obs[5], obs[7], obs[10], obs[12]])) ** 2
         
+        # print(f"coarse: {-0.3 * vel_tracking}, fine: {vel_tracking_fine}")
+        # print(f"total: {(-0.3 * vel_tracking) + vel_tracking_fine}")
+        # print(f"obs 2: {obs[2]}")
+        
         # height above ground (interpolated terrain surface)
-        env: Any = self.unwrapped
-        hull_x = env.hull.position.x
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
         height_above_ground = env.hull.position.y - ground_y
         
         # hop bonus: take the height above ground and scale it by the velocity tracking error (squared) to encorage it to jump around?
-        hop_bonus = height_above_ground * (1 - np.tanh(5 * abs(vel_err)))
+        # hop_bonus = height_above_ground * (1 - np.tanh(5 * abs(vel_err)))
         
-        if obs[8] == 1 or obs[13] == 1:  # either foot touching → not airborne
-            hop_bonus = 0
+        # if obs[8] == 1 or obs[13] == 1:  # either foot touching → not airborne
+        #     hop_bonus = 0
         
         # penalize being close the ground
         # this is old code
         TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
-        height_deficit = max(0.0, TARGET_HEIGHT - height_above_ground)
-        body_height_penalty = height_deficit ** 2
+        body_height = TARGET_HEIGHT - height_above_ground
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
-            ("vel_tracking", vel_tracking, -0.6),
+            ("vel_tracking", vel_tracking, -0.1),
             # fine velocity tracking reward
-            ("vel_tracking_fine", vel_tracking_fine, 0.2),
+            ("vel_tracking_fine", vel_tracking_fine, 0.3),
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # reward strict single-leg contact
-            ("leg_1_contact", leg_1_contact, 0.1),
-            ("leg_2_contact", leg_2_contact, -0.2),
+            ("leg_1_contact", leg_1_contact, 0.2),
+            ("leg_2_contact", leg_2_contact, -0.6),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.02),
             # hop bonus reward
-            ("hop_bonus", hop_bonus, 0.1),
-            # body height deficit
-            ("body_height", body_height_penalty, -0.3),
+            # ("hop_bonus", hop_bonus, 0.1),
+            
+            # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
+            ("body_height", body_height, -0.2),
+            
             # penalize dying
-            ("termination", termination, -20.0),
+            ("termination", termination, -150.0),
         ]
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
@@ -189,6 +200,8 @@ class HopReward(Wrapper):
         unwrapped: Any = self.unwrapped
         real_vel_x: float = unwrapped.hull.linearVelocity.x
 
+        # print(f"cmd: {self._cmd_vel}, real: {real_vel_x}")
+        # print()
 
         # green = command
         self._draw_velocity_arrow(pygame, env, self._cmd_vel, color=(9, 176, 12), y_offset=-10)
