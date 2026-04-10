@@ -32,7 +32,7 @@ class HopReward(Wrapper):
         man_vel_ctrl: Manual velocity control. Keep False for training. Default: False.
 
         vel_switching_freq: Frequency in seconds in which velocity command is switched. This only has an effect when man_vel_ctrl is False. Default: 10.
-        
+
         vel_interp_speed: Amount of time it takes to interpolate between two speeds. Default: 1
 
         vel_sample_range: The range from which to sample command velocity from. This only has an effect when man_vel_ctrl is False. Default: [-1, 1].
@@ -56,14 +56,16 @@ class HopReward(Wrapper):
         self._cmd_vel: float = 0
         self._cmd_vel_target: float = 0
         self._cmd_vel_buf: list[float] = [0]  # smooth out transitions
-        self._max_vel_buf_size: int = np.floor(vel_interp_speed * FPS)  # smooth out transitions
+        self._max_vel_buf_size: int = np.floor(
+            vel_interp_speed * FPS
+        )  # smooth out transitions
         # TODO: implement a cmd_vel smoothing buffer if necessary (to smoothly switch btwn one command vel to another)
-        
+
         base = self.env.observation_space
         self.observation_space = spaces.Box(
-            low=np.append(base.low, -np.inf), # type: ignore
-            high=np.append(base.high, np.inf), # type: ignore
-            dtype=np.float64
+            low=np.append(base.low, -np.inf),  # type: ignore
+            high=np.append(base.high, np.inf),  # type: ignore
+            dtype=np.float64,
         )
 
     def _compute_hop_rew(
@@ -87,50 +89,58 @@ class HopReward(Wrapper):
             [13]      leg_2_contact
             [14:24]   lidar
         """
-        
+
         env: Any = self.unwrapped
-        hull_vel_x = env.hull.linearVelocity.x  # get b2body lin vel. The obs one is fucked.
+        hull_vel_x = (
+            env.hull.linearVelocity.x
+        )  # get b2body lin vel. The obs one is fucked.
         hull_ang_vel = env.hull.angularVelocity
         hull_ang = env.hull.angle
         hull_x = env.hull.position.x
-        
+
         # print(env.hull)
 
         # velocity tracking error
         vel_err = self._cmd_vel - hull_vel_x
-        vel_tracking = vel_err ** 2
+        vel_tracking = vel_err**2
         # fine velocity tracking error
         vel_tracking_fine = 1 - np.tanh(40 * vel_tracking)
         # hull angle velocity
         hull_ang_vel = abs(hull_ang_vel) ** 2
         # leg lift
-        leg_1_contact = 1 if obs[8] == 1 and obs[13] == 0 else -1  # encourage leg 1 contact
+        leg_1_contact = (
+            1 if obs[8] == 1 and obs[13] == 0 else -1
+        )  # encourage leg 1 contact
         leg_2_contact = 1 if obs[13] == 1 else 0  # penalize any leg 2 contact
         # hull angle deviation from 0
-        hull_ang_l2 = hull_ang ** 2
+        hull_ang_l2 = hull_ang**2
         # termination
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
         joint_vel_l2 = (np.mean([obs[5], obs[7], obs[10], obs[12]])) ** 2
-        
+
         # print(f"coarse: {-0.3 * vel_tracking}, fine: {vel_tracking_fine}")
         # print(f"total: {(-0.3 * vel_tracking) + vel_tracking_fine}")
         # print(f"obs 2: {obs[2]}")
-        
+
         # height above ground (interpolated terrain surface)
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
         height_above_ground = env.hull.position.y - ground_y
-        
-        # hop bonus: take the height above ground and scale it by the velocity tracking error (squared) to encorage it to jump around?
-        # hop_bonus = height_above_ground * (1 - np.tanh(5 * abs(vel_err)))
-        
-        # if obs[8] == 1 or obs[13] == 1:  # either foot touching → not airborne
-        #     hop_bonus = 0
-        
+
         # penalize being close the ground
         # this is old code
         TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
         body_height = TARGET_HEIGHT - height_above_ground
+
+        # hop bonus: take the height above ground and scale it by the velocity tracking error (squared) to encorage it to jump around?
+        hop_bonus = height_above_ground * (1 - np.tanh(5 * abs(vel_err)))
+
+        if (
+            obs[8] == 1 or obs[13] == 1 or body_height < -0.15
+        ):  # either foot touching or height is too low → not airborne
+            hop_bonus = 0
+
+        # print(body_height + 0.15, hop_bonus)
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
@@ -140,18 +150,17 @@ class HopReward(Wrapper):
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # reward strict single-leg contact
-            ("leg_1_contact", leg_1_contact, 0.2),
+            ("leg_1_contact", leg_1_contact, 0.15),
             ("leg_2_contact", leg_2_contact, -1.1),
+            ("hop_bonus", hop_bonus, 0.2),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.02),
             # hop bonus reward
             # ("hop_bonus", hop_bonus, 0.1),
-            
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
             ("body_height", body_height, -0.4),
-            
             # penalize dying
             ("termination", termination, -150.0),
         ]
@@ -185,7 +194,7 @@ class HopReward(Wrapper):
         if len(self._cmd_vel_buf) > self._max_vel_buf_size:
             # trim front
             self._cmd_vel_buf.pop(0)
-        
+
         # update cmd vel
         self._cmd_vel = float(np.mean(self._cmd_vel_buf))
 
@@ -219,22 +228,19 @@ class HopReward(Wrapper):
         # print()
 
         # green = command
-        self._draw_velocity_arrow(pygame, env, self._cmd_vel, color=(9, 176, 12), y_offset=-10)
+        self._draw_velocity_arrow(
+            pygame, env, self._cmd_vel, color=(9, 176, 12), y_offset=-10
+        )
         # blue = real
         self._draw_velocity_arrow(pygame, env, real_vel_x, color=(71, 126, 255))
 
     def _draw_velocity_arrow(
-        self,
-        pygame,
-        env,
-        vel_x: float,
-        color: tuple,
-        y_offset: int = 0
+        self, pygame, env, vel_x: float, color: tuple, y_offset: int = 0
     ):
         SCALE = 30.0
         VIEWPORT_H = 400
         ARROW_SCALE = 2
-        
+
         HEAD_LEN = 10
         HEAD_WIDTH = 5
 
@@ -245,15 +251,17 @@ class HopReward(Wrapper):
         if abs(vel_x) < 1e-6:
             return
 
-        sign = math.copysign(1.0, vel_x)   # direction
-        mag = abs(vel_x) * ARROW_SCALE * 10 # pixel length of shaft
+        sign = math.copysign(1.0, vel_x)  # direction
+        mag = abs(vel_x) * ARROW_SCALE * 10  # pixel length of shaft
 
         ex = sx + sign * mag
         ey = sy
 
         # shorten shaft so it ends at base of head, not tip
         shaft_ex = ex - sign * HEAD_LEN
-        pygame.draw.line(env.surf, color, (int(sx), int(sy)), (int(shaft_ex), int(ey)), 2)
+        pygame.draw.line(
+            env.surf, color, (int(sx), int(sy)), (int(shaft_ex), int(ey)), 2
+        )
 
         # constant-size arrowhead: tip at (ex, ey), base perpendicular in screen y
         p1 = (int(ex), int(ey))
@@ -271,7 +279,7 @@ class HopReward(Wrapper):
             self._cmd_vel = np.random.uniform(*self._vel_sample_range)
         else:
             self._cmd_vel = 0.0
-        
+
         self._cmd_vel_target = self._cmd_vel  # reset target
         self._cmd_vel_buf = [self._cmd_vel]  # reset buffer
 
@@ -293,21 +301,21 @@ class HopReward(Wrapper):
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
         HULL_Y_SAMPLE_LIM = (0.2, 0.3)
-        HULL_X_SAMPLE_LIM = (60.0, 75.0)
-        HULL_ROT_SAMPLE_LIM = (-0.1, 0.1)
+        HULL_X_SAMPLE_LIM = (40.0, 80.0)
+        HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_X_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_Y_SAMPLE_LIM = (0, 0)
 
         hull.position += b2Vec2(
             np.random.uniform(*HULL_X_SAMPLE_LIM), np.random.uniform(*HULL_Y_SAMPLE_LIM)
         )
-        
+
         hull_x = env.hull.position.x
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
         ground_y_rel = ground_y - VIEWPORT_H / SCALE / 4
         # move hull to above ground
         hull.position.y += ground_y_rel
-        
+
         hull.linearVelocity += b2Vec2(
             np.random.uniform(*HULL_VEL_X_SAMPLE_LIM),
             np.random.uniform(*HULL_VEL_Y_SAMPLE_LIM),
@@ -363,8 +371,8 @@ class HopReward(Wrapper):
 
         # apply the changes
         obs = env.step(np.array([0, 0, 0, 0]))[0]
-        
+
         # append command velocity to observations
         obs = np.append(obs, np.float64(self._cmd_vel))
-        
+
         return obs, info

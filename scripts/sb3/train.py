@@ -31,8 +31,10 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "hop_backward/hop_backward_1" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
-TIMESTEPS = 200 * 2048 * 14
+EXPERIMENT_NAME = "hop_backward/hop_backward_2" + datetime.today().strftime(
+    "-%H_%M_%S-%Y_%m_%d"
+)
+TIMESTEPS = 400 * 2048 * 14
 
 # =========================================
 
@@ -42,17 +44,19 @@ def main():
 
     def make_env():
         env = gym.make("BipedalWalker-v3")
-        env = Monitor(ProprioHopReward(
-            env,
-            vel_sample_range=(-5, 0),
-            vel_sample_zero=0.05,
-            vel_switching_freq=4
-        ))
+        env = Monitor(
+            ProprioHopReward(
+                env,
+                vel_sample_range=(-5, 0),
+                vel_sample_zero=0.05,
+                vel_switching_freq=4,
+            )
+        )
         return env
 
     train_env = SubprocVecEnv([make_env for _ in range(14)])
     eval_env = SubprocVecEnv([make_env for _ in range(5)])
-    
+
     # train_env = make_vec_env(
     #     "BipedalWalker-v3",
     #     n_envs=14,
@@ -65,8 +69,7 @@ def main():
     # )
 
     policy_kwargs = dict(
-        activation_fn=torch.nn.ELU,
-        net_arch=dict(pi=[256, 128, 64], vf=[256, 128, 64])
+        activation_fn=torch.nn.ELU, net_arch=dict(pi=[256, 128, 64], vf=[256, 128, 64])
     )
 
     model = PPO(
@@ -104,7 +107,9 @@ def main():
     model.learn(
         total_timesteps=TIMESTEPS,
         reset_num_timesteps=False,
-        callback=CallbackList([StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]),
+        callback=CallbackList(
+            [StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]
+        ),
         progress_bar=True,
     )
 
