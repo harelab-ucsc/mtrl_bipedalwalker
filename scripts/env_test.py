@@ -6,9 +6,10 @@ from pynput.keyboard import Key, KeyCode
 import os
 
 from wrappers.plot_env import Plotter
-from wrappers.bipedal_walker.standing_env import StandReward
 from wrappers.bipedal_walker.hopping_env import HopReward
+from wrappers.bipedal_walker.walking_env import WalkReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
+from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
 
 SEED = 42
 DRAW_PLOTS = False
@@ -30,7 +31,7 @@ def main():
         "BipedalWalker-v3", render_mode="rgb_array"
     )  # no autodisplay, we'll use our own wrapper render
     
-    wrap_env = ProprioHopReward(
+    wrap_env = ProprioWalkReward(
         env,
         ep_time=15,
         vel_switching_freq=3,

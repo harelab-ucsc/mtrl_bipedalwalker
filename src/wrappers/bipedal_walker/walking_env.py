@@ -10,7 +10,7 @@ import math
 from gymnasium import spaces
 
 
-class HopReward(Wrapper):
+class WalkReward(Wrapper):
     def __init__(
         self,
         env: Env[ObsType, ActType],
@@ -22,22 +22,27 @@ class HopReward(Wrapper):
         vel_sample_zero: float = 0.2,
     ):
         """
-        Wrapper that replaces BipedalWalker's default reward with a hopping reward.
+        Wrapper that replaces BipedalWalker's default reward with a walking reward.
+
+        Rewards velocity tracking (coarse + fine), upright posture, airtime, and
+        body height. Appends a command velocity to the observation. On reset,
+        randomizes hull position, angle, and joint configuration for domain
+        randomization.
 
         Args:
         env: The BipedalWalker environment to wrap.
 
-        ep_time: Maximum episode duration in seconds. Default: 15.
+        ep_time: Maximum episode duration in seconds. Default: 10.
 
         man_vel_ctrl: Manual velocity control. Keep False for training. Default: False.
 
         vel_switching_freq: Frequency in seconds in which velocity command is switched. This only has an effect when man_vel_ctrl is False. Default: 10.
 
-        vel_interp_speed: Amount of time it takes to interpolate between two speeds. Default: 1
+        vel_interp_speed: Amount of time in seconds to interpolate between two velocity commands. Default: 1.
 
-        vel_sample_range: The range from which to sample command velocity from. This only has an effect when man_vel_ctrl is False. Default: [-1, 1].
+        vel_sample_range: The range from which to sample command velocity. This only has an effect when man_vel_ctrl is False. Default: (-2.5, 2.5).
 
-        vel_sample_zero: Probability in sampling a 0 velocity command.  This only has an effect when man_vel_ctrl is False. Default: 0.2.
+        vel_sample_zero: Probability of sampling a 0 velocity command. This only has an effect when man_vel_ctrl is False. Default: 0.2.
         """
         super().__init__(env)
 
@@ -67,8 +72,12 @@ class HopReward(Wrapper):
             high=np.append(base.high, np.inf),  # type: ignore
             dtype=np.float64,
         )
+        
+        # used to calculate total air time
+        self._leg_1_airtime = 0
+        self._leg_2_airtime = 0
 
-    def _compute_hop_rew(
+    def _compute_walk_rew(
         self, obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float]]:
         """
@@ -91,9 +100,7 @@ class HopReward(Wrapper):
         """
 
         env: Any = self.unwrapped
-        hull_vel_x = (
-            env.hull.linearVelocity.x
-        )  # get b2body lin vel. The obs one is fucked.
+        hull_vel_x = env.hull.linearVelocity.x
         hull_ang_vel = env.hull.angularVelocity
         hull_ang = env.hull.angle
         hull_x = env.hull.position.x
@@ -107,15 +114,12 @@ class HopReward(Wrapper):
         vel_tracking_fine = 1 - np.tanh(40 * vel_tracking)
         # hull angle velocity
         hull_ang_vel = abs(hull_ang_vel) ** 2
-        # leg lift
-        leg_1_contact = 1 if obs[8] == 1 and obs[13] == 0 else -1
-        leg_2_contact = 1 if obs[13] == 1 else 0  # penalize any leg 2 contact
         # hull angle deviation from 0
         hull_ang_l2 = hull_ang**2
         # termination
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
-        joint_vel_l2 = (np.mean([obs[5], obs[7], obs[10], obs[12]])) ** 2
+        joint_vel_l2 = np.mean([obs[5]**2, obs[7]**2, obs[10]**2, obs[12]**2])
 
         # height above ground (interpolated terrain surface)
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
@@ -124,15 +128,17 @@ class HopReward(Wrapper):
         # penalize being close the ground
         TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
         body_height = TARGET_HEIGHT - height_above_ground
-        # hop bonus: take the height above ground and scale it by the velocity tracking error (squared) to encorage it to jump around?
-        hop_bonus = height_above_ground * (1 - np.tanh(5 * abs(vel_err)))
 
-        if (
-            obs[8] == 1 or obs[13] == 1 or body_height < -0.15
-        ):  # either foot touching or height is too low → not airborne
-            hop_bonus = 0
-
-        # print(body_height + 0.15, hop_bonus)
+        # airtime bonus
+        self._leg_1_airtime += 0.01  # 0.2s air time = 10 frames -> 0.1 reward
+        self._leg_2_airtime += 0.01
+        if obs[8] == 1:
+            self._leg_1_airtime = 0
+        if obs[13] == 1:
+            self._leg_2_airtime = 0
+        
+        self._leg_1_airtime = min(self._leg_1_airtime, 0.4)  # cap at 0.04 / 0.1 = 0.4 reward max (real rew / weight)
+        self._leg_2_airtime = min(self._leg_2_airtime, 0.4)
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
@@ -141,10 +147,9 @@ class HopReward(Wrapper):
             ("vel_tracking_fine", vel_tracking_fine, 0.3),
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
-            # reward strict single-leg contact
-            ("leg_1_contact", leg_1_contact, 0.15),
-            ("leg_2_contact", leg_2_contact, -1.1),
-            ("hop_bonus", hop_bonus, 0.2),
+            # air time bonux
+            ("leg_1_airtime", self._leg_1_airtime, 0.1),
+            ("leg_2_airtime", self._leg_2_airtime, 0.1),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
@@ -167,7 +172,7 @@ class HopReward(Wrapper):
         # detect truncation
         self._step_count += 1
         trunc = trunc or self._step_count >= self._max_steps
-        rew, info["reward_terms"] = self._compute_hop_rew(obs, term)
+        rew, info["reward_terms"] = self._compute_walk_rew(obs, term)
 
         # change command velocity if specified
         if (
@@ -287,7 +292,7 @@ class HopReward(Wrapper):
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
         HULL_Y_SAMPLE_LIM = (0.2, 0.3)
-        HULL_X_SAMPLE_LIM = (0.0, 45.0)
+        HULL_X_SAMPLE_LIM = (0.0, 50.0)
         HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_X_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_Y_SAMPLE_LIM = (0, 0)

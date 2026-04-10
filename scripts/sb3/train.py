@@ -21,7 +21,9 @@ from utils.paths import MODELS_DIR, LOGS_DIR
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
 from wrappers.bipedal_walker.standing_env import StandReward
 from wrappers.bipedal_walker.hopping_env import HopReward
+from wrappers.bipedal_walker.walking_env import WalkReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
+from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
 
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
@@ -31,10 +33,10 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "hop_backward/hop_backward_2" + datetime.today().strftime(
+EXPERIMENT_NAME = "walk_forward/walk_forward_1" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
-TIMESTEPS = 400 * 2048 * 14
+TIMESTEPS = 200 * 2048 * 14
 
 # =========================================
 
@@ -45,9 +47,9 @@ def main():
     def make_env():
         env = gym.make("BipedalWalker-v3")
         env = Monitor(
-            ProprioHopReward(
+            ProprioWalkReward(
                 env,
-                vel_sample_range=(-5, 0),
+                vel_sample_range=(0, 5),
                 vel_sample_zero=0.05,
                 vel_switching_freq=4,
             )
