@@ -23,7 +23,7 @@ from wrappers.plot_env import Plotter
 # EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
 # EXPERIMENT_NAME = "walk_forward/walk_forward_4-01_11_54-2026_04_11"
 # paste the exact name that train.py printed at the end of its run
-EXPERIMENT_NAME = "sit/sit_1-04_52_25-2026_04_11"
+EXPERIMENT_NAME = "sit/sit_1-05_23_53-2026_04_11"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 

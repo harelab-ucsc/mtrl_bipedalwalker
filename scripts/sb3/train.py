@@ -42,7 +42,7 @@ if not os.path.exists(LOGS_DIR):
 EXPERIMENT_NAME = "sit/sit_1" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
-TIMESTEPS = 2_000_000
+TIMESTEPS = 3_000_000
 
 # =========================================
 

@@ -102,11 +102,12 @@ class SitReward(Wrapper):
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
         height_above_ground = env.hull.position.y - ground_y
 
-        # target: low crouch. Standing target is 2*LEG_H; sit sits at ~1*LEG_H
-        # which is physically reachable without the hull itself contacting
-        # the ground (hull bottom is ~0.3 below its center).
+        # target: the steady-state the policy naturally converges to with
+        # bent knees (~1.2*LEG_H measured). Lower targets (e.g. 1.0*LEG_H)
+        # are below the geometric minimum and create a permanent pull toward
+        # an unreachable pose, causing instability.
         LEG_H = 34 / 30.0
-        SIT_TARGET_HEIGHT = 1.0 * LEG_H
+        SIT_TARGET_HEIGHT = 1.2 * LEG_H
         body_height_err = (SIT_TARGET_HEIGHT - height_above_ground) ** 2
 
         # knee fold: reward knee joint positions close to the folded end
@@ -145,7 +146,7 @@ class SitReward(Wrapper):
             ("joint_vel", joint_vel, -0.3),
             ("action_l2", action_l2, -0.15),
             ("action_delta", action_delta, -0.5),
-            ("termination", termination, -100.0),
+            ("termination", termination, -300.0),
         ]
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
@@ -270,28 +271,28 @@ class SitReward(Wrapper):
 
         if MODE == 0:
             # clean upright standing, near-rest joints
-            HIP_SAMPLE_LIM = (-0.15, 0.15)
-            KNEE_SAMPLE_LIM = (-0.25, -0.1)
+            HIP_SAMPLE_LIM = (-0.1, 0.1)
+            KNEE_SAMPLE_LIM = (-0.2, -0.1)
             HULL_Y_SAMPLE_LIM = (0.2, 0.4)
-            HULL_ROT_SAMPLE_LIM = (-0.1, 0.1)
-            HULL_VEL_X_SAMPLE_LIM = (-0.2, 0.2)
-            HULL_VEL_Y_SAMPLE_LIM = (-0.1, 0.1)
+            HULL_ROT_SAMPLE_LIM = (-0.08, 0.08)
+            HULL_VEL_X_SAMPLE_LIM = (-0.15, 0.15)
+            HULL_VEL_Y_SAMPLE_LIM = (-0.05, 0.05)
         elif MODE == 1:
-            # standing with wider joint variation
+            # standing with wider joint variation, still fully upright
+            HIP_SAMPLE_LIM = (-0.3, 0.3)
+            KNEE_SAMPLE_LIM = (-0.5, -0.1)
+            HULL_Y_SAMPLE_LIM = (0.2, 0.4)
+            HULL_ROT_SAMPLE_LIM = (-0.15, 0.15)
+            HULL_VEL_X_SAMPLE_LIM = (-0.5, 0.5)
+            HULL_VEL_Y_SAMPLE_LIM = (-0.15, 0.15)
+        else:
+            # standing with mild tilt + velocity (strictly recoverable)
             HIP_SAMPLE_LIM = (-0.4, 0.4)
             KNEE_SAMPLE_LIM = (-0.6, -0.1)
             HULL_Y_SAMPLE_LIM = (0.2, 0.4)
             HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
             HULL_VEL_X_SAMPLE_LIM = (-0.8, 0.8)
             HULL_VEL_Y_SAMPLE_LIM = (-0.2, 0.2)
-        else:
-            # standing with mild tilt + velocity (recoverable perturbation)
-            HIP_SAMPLE_LIM = (-0.5, 0.5)
-            KNEE_SAMPLE_LIM = (-0.8, -0.1)
-            HULL_Y_SAMPLE_LIM = (0.2, 0.4)
-            HULL_ROT_SAMPLE_LIM = (-0.3, 0.3)
-            HULL_VEL_X_SAMPLE_LIM = (-1.2, 1.2)
-            HULL_VEL_Y_SAMPLE_LIM = (-0.25, 0.25)
 
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         HULL_X_SAMPLE_LIM = (3.0, 8.0)
