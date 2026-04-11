@@ -25,6 +25,7 @@ from pynput import keyboard as kb
 from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
 from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.bipedal_walker.sitting_env import SitReward
 from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
@@ -38,10 +39,10 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "walk_forward/walk_forward_4" + datetime.today().strftime(
+EXPERIMENT_NAME = "sit/sit_1" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
-TIMESTEPS = 200 * 2048 * 14
+TIMESTEPS = 2_000_000
 
 # =========================================
 
@@ -52,11 +53,9 @@ def main():
     def make_env():
         env = gym.make("BipedalWalker-v3")
         env = Monitor(
-            ProprioWalkReward(
+            SitReward(
                 env,
-                vel_sample_range=(0, 5),
-                vel_sample_zero=0.05,
-                vel_switching_freq=4,
+                ep_time=10,
             )
         )
         return env
@@ -76,7 +75,7 @@ def main():
         n_epochs=15,
         n_steps=1024,
         batch_size=64,
-        ent_coef=0.005,
+        ent_coef=0.001,
         policy_kwargs=policy_kwargs,
         device=torch.device("cpu"),
     )
@@ -114,11 +113,17 @@ def main():
     print(f"Done! Total time: {duration}")
     print(f"Experiment name: {EXPERIMENT_NAME}")
 
-    subprocess.run(
-        ["osascript", "-e", f'display notification "Finished in {duration}" with title "Training complete" subtitle "{EXPERIMENT_NAME}"'],
-        check=False,
-    )
-    play_sound(ROOT / "assets" / "train_finish.mp3")
+    try:
+        subprocess.run(
+            ["osascript", "-e", f'display notification "Finished in {duration}" with title "Training complete" subtitle "{EXPERIMENT_NAME}"'],
+            check=False,
+        )
+    except FileNotFoundError:
+        pass  # not on macOS
+    try:
+        play_sound(ROOT / "assets" / "train_finish.mp3")
+    except Exception as e:
+        print(f"(skipping play_sound: {e})")
 
 
 def print_run_info(env, model, experiment_name):

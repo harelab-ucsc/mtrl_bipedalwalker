@@ -9,6 +9,8 @@ from pynput.keyboard import Key, KeyCode
 from utils.paths import MODELS_DIR
 from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
+from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.bipedal_walker.sitting_env import SitReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
 from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
 from wrappers.plot_env import Plotter
@@ -19,7 +21,9 @@ from wrappers.plot_env import Plotter
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
 # EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
-EXPERIMENT_NAME = "walk_forward/walk_forward_4-01_11_54-2026_04_11"
+# EXPERIMENT_NAME = "walk_forward/walk_forward_4-01_11_54-2026_04_11"
+# paste the exact name that train.py printed at the end of its run
+EXPERIMENT_NAME = "sit/sit_1-04_52_25-2026_04_11"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
@@ -44,13 +48,7 @@ def main():
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
     # wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
-    wrap_env = ProprioWalkReward(
-        env,
-        ep_time=15,
-        vel_switching_freq=3,
-        vel_sample_range=(0, 5),
-        vel_sample_zero=0.05,
-    )
+    wrap_env = SitReward(env, ep_time=15)
     # wrap_env = env
     if DRAW_PLOTS:
         wrap_env = Plotter(wrap_env)
@@ -66,7 +64,7 @@ def main():
     # load model
     print(f'Loading model "{MODEL_CHECKPOINT}"...')
     model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"
-    model = PPO.load(model_path, env=wrap_env)
+    model = PPO.load(model_path, env=wrap_env, device="cpu")
 
     total_rewards = 0
 
@@ -101,7 +99,7 @@ def main():
 
         assert wrap_env.action_space.shape is not None
 
-        action, _states = model.predict(obs)
+        action, _states = model.predict(obs, deterministic=True)
         obs, rewards, term, trunc, _ = wrap_env.step(action)
         total_rewards += float(rewards)
 
