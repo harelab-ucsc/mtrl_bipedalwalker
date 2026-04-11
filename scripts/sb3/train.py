@@ -16,8 +16,13 @@ from stable_baselines3.common.logger import configure
 from datetime import datetime
 import time
 import os
+import subprocess
+import threading
 
-from utils.paths import MODELS_DIR, LOGS_DIR
+import pygame
+from pynput import keyboard as kb
+
+from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
 from wrappers.bipedal_walker.standing_env import StandReward
 from wrappers.bipedal_walker.hopping_env import HopReward
@@ -58,17 +63,6 @@ def main():
 
     train_env = SubprocVecEnv([make_env for _ in range(14)])
     eval_env = SubprocVecEnv([make_env for _ in range(5)])
-
-    # train_env = make_vec_env(
-    #     "BipedalWalker-v3",
-    #     n_envs=14,
-    #     vec_env_cls=SubprocVecEnv
-    # )
-    # eval_env = make_vec_env(
-    #     "BipedalWalker-v3",
-    #     n_envs=5,
-    #     vec_env_cls=SubprocVecEnv
-    # )
 
     policy_kwargs = dict(
         activation_fn=torch.nn.ELU, net_arch=dict(pi=[256, 128, 64], vf=[256, 128, 64])
@@ -114,9 +108,17 @@ def main():
         ),
         progress_bar=True,
     )
+    
 
-    print(f"Done! Total time: {fmt_duration(time.time() - start_time)}")
+    duration = fmt_duration(time.time() - start_time)
+    print(f"Done! Total time: {duration}")
     print(f"Experiment name: {EXPERIMENT_NAME}")
+
+    subprocess.run(
+        ["osascript", "-e", f'display notification "Finished in {duration}" with title "Training complete" subtitle "{EXPERIMENT_NAME}"'],
+        check=False,
+    )
+    play_sound(ROOT / "assets" / "train_finish.mp3")
 
 
 def print_run_info(env, model, experiment_name):
@@ -178,6 +180,28 @@ def print_run_info(env, model, experiment_name):
     )
 
     print(f"\n{'=' * 44}\n")
+    
+    
+def play_sound(path):
+    pygame.mixer.init()
+    pygame.mixer.music.load(str(path))
+    pygame.mixer.music.play()
+    print("Tip: Press Esc to stop the sound.")
+
+    stop = threading.Event()
+
+    def on_press(key):
+        if key == kb.Key.esc:
+            stop.set()
+
+    listener = kb.Listener(on_press=on_press)
+    listener.start()
+    while pygame.mixer.music.get_busy() and not stop.is_set():
+        time.sleep(0.1)
+    listener.stop()
+
+    pygame.mixer.music.stop()
+    pygame.mixer.quit()
 
 
 if __name__ == "__main__":

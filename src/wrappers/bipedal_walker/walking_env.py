@@ -128,7 +128,7 @@ class WalkReward(Wrapper):
         # penalize being close the ground
         TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
         body_height = (TARGET_HEIGHT - height_above_ground) ** 2  # squared error
-
+        
         # airtime bonus
         # self._leg_1_airtime += 0.01  # 0.2s air time = 10 frames -> 0.1 reward
         # self._leg_2_airtime += 0.01
@@ -153,9 +153,9 @@ class WalkReward(Wrapper):
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
-            ("joint_vel_l2", joint_vel_l2, -0.02),
+            ("joint_vel_l2", joint_vel_l2, -0.1),  # -0.02
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.4),
+            ("body_height", body_height, -0.6),  # -0.4
             # penalize dying
             ("termination", termination, -150.0),
         ]
