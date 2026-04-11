@@ -38,7 +38,7 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "walk_forward/walk_forward_3" + datetime.today().strftime(
+EXPERIMENT_NAME = "walk_forward/walk_forward_4" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
 TIMESTEPS = 200 * 2048 * 14

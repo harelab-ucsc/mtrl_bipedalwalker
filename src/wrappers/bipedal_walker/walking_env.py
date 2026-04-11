@@ -120,25 +120,27 @@ class WalkReward(Wrapper):
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
         joint_vel_l2 = np.mean([obs[5]**2, obs[7]**2, obs[10]**2, obs[12]**2])
+        # leg contact
+        leg_contact = 1 if obs[8] == 1 or obs[13] == 1 else 0
 
         # height above ground (interpolated terrain surface)
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
         height_above_ground = env.hull.position.y - ground_y
 
         # penalize being close the ground
-        TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
-        body_height = (TARGET_HEIGHT - height_above_ground) ** 2  # squared error
+        TARGET_HEIGHT = 2 * (34 / 30.0) + 0.1  # 2 * LEG_H in world units
+        body_height = max(TARGET_HEIGHT - height_above_ground, 0)
         
         # airtime bonus
-        # self._leg_1_airtime += 0.01  # 0.2s air time = 10 frames -> 0.1 reward
-        # self._leg_2_airtime += 0.01
-        # if obs[8] == 1:
-        #     self._leg_1_airtime = 0
-        # if obs[13] == 1:
-        #     self._leg_2_airtime = 0
+        self._leg_1_airtime += 0.01  # 0.5s air time = 25 frames -> 0.25 reward
+        self._leg_2_airtime += 0.01
+        if obs[8] == 1:
+            self._leg_1_airtime = 0
+        if obs[13] == 1:
+            self._leg_2_airtime = 0
         
-        self._leg_1_airtime = min(self._leg_1_airtime, 0.4)  # cap at 0.04 / 0.1 = 0.4 reward max (real rew / weight)
-        self._leg_2_airtime = min(self._leg_2_airtime, 0.4)
+        self._leg_1_airtime = min(self._leg_1_airtime, 0.6)  # cap at 0.03 / 0.05 = 0.6 reward max (real rew / weight)
+        self._leg_2_airtime = min(self._leg_2_airtime, 0.6)
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
@@ -148,14 +150,16 @@ class WalkReward(Wrapper):
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # air time bonux
-            # ("leg_1_airtime", self._leg_1_airtime, 0.1),
-            # ("leg_2_airtime", self._leg_2_airtime, 0.1),
+            ("leg_1_airtime", self._leg_1_airtime, 0.05),
+            ("leg_2_airtime", self._leg_2_airtime, 0.05),
+            # leg contact
+            ("leg_contact", leg_contact, 0.1),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
-            ("joint_vel_l2", joint_vel_l2, -0.1),  # -0.02
+            ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.6),  # -0.4
+            ("body_height", body_height, -0.6),
             # penalize dying
             ("termination", termination, -150.0),
         ]
