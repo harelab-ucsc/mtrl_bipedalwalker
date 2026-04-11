@@ -19,7 +19,7 @@ from wrappers.plot_env import Plotter
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
 # EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
-EXPERIMENT_NAME = "walk_forward/walk_forward_1-01_10_20-2026_04_10"
+EXPERIMENT_NAME = "walk_forward/walk_forward_2-18_12_09-2026_04_10"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
@@ -44,7 +44,7 @@ def main():
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
     # wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
-    wrap_env = ProprioHopReward(
+    wrap_env = ProprioWalkReward(
         env,
         ep_time=15,
         vel_switching_freq=3,
