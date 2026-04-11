@@ -130,12 +130,12 @@ class WalkReward(Wrapper):
         body_height = TARGET_HEIGHT - height_above_ground
 
         # airtime bonus
-        self._leg_1_airtime += 0.01  # 0.2s air time = 10 frames -> 0.1 reward
-        self._leg_2_airtime += 0.01
-        if obs[8] == 1:
-            self._leg_1_airtime = 0
-        if obs[13] == 1:
-            self._leg_2_airtime = 0
+        # self._leg_1_airtime += 0.01  # 0.2s air time = 10 frames -> 0.1 reward
+        # self._leg_2_airtime += 0.01
+        # if obs[8] == 1:
+        #     self._leg_1_airtime = 0
+        # if obs[13] == 1:
+        #     self._leg_2_airtime = 0
         
         self._leg_1_airtime = min(self._leg_1_airtime, 0.4)  # cap at 0.04 / 0.1 = 0.4 reward max (real rew / weight)
         self._leg_2_airtime = min(self._leg_2_airtime, 0.4)
@@ -148,8 +148,8 @@ class WalkReward(Wrapper):
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # air time bonux
-            ("leg_1_airtime", self._leg_1_airtime, 0.1),
-            ("leg_2_airtime", self._leg_2_airtime, 0.1),
+            # ("leg_1_airtime", self._leg_1_airtime, 0.1),
+            # ("leg_2_airtime", self._leg_2_airtime, 0.1),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
