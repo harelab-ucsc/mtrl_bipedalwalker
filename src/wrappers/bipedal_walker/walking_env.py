@@ -138,16 +138,14 @@ class WalkReward(Wrapper):
         TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
         body_height = max(TARGET_HEIGHT - height_above_ground, 0)
         
-        # airtime bonus
-        self._leg_1_airtime += 0.01  # 0.5s air time = 25 frames -> 0.25 reward
-        self._leg_2_airtime += 0.01
-        if obs[8] == 1:
-            self._leg_1_airtime = 0
-        if obs[13] == 1:
-            self._leg_2_airtime = 0
-        
-        # self._leg_1_airtime = min(self._leg_1_airtime, 0.4)  # cap at 0.04 / 0.1 = 0.4 reward max (real rew / weight)
-        # self._leg_2_airtime = min(self._leg_2_airtime, 0.4)
+        # foot slip: squared speed of each lower leg while in ground contact.
+        # env.legs[1] and env.legs[3] are the lower (foot) bodies per ContactDetector.
+        # only penalize when contact is active; zero otherwise.
+        foot_1_vel = env.legs[1].linearVelocity
+        foot_2_vel = env.legs[3].linearVelocity
+        slip_1 = (foot_1_vel.x**2 + foot_1_vel.y**2) * obs[8]
+        slip_2 = (foot_2_vel.x**2 + foot_2_vel.y**2) * obs[13]
+        foot_slip = slip_1 + slip_2
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
@@ -155,22 +153,19 @@ class WalkReward(Wrapper):
             # fine velocity tracking reward
             ("vel_tracking_fine", vel_tracking_fine, 0.3),
             # penalize rotational velocity
-            ("hull_ang_vel", hull_ang_vel, -0.1),
-            # air time bonus
-            
-            # ("leg_1_airtime", self._leg_1_airtime, 0.1),
-            # ("leg_2_airtime", self._leg_2_airtime, 0.1),
-            
+            ("hull_ang_vel", hull_ang_vel, -0.15),
             # leg contact
             ("leg_contact", leg_contact, 0.2),
             # penalize deviation from upright
-            ("hull_ang_l2", hull_ang_l2, -0.5),
+            ("hull_ang_l2", hull_ang_l2, -0.25),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
             ("body_height", body_height, -0.1),
             # penalize y velocity
-            ("body_y_vel", body_y_vel, -0.2),
+            ("body_y_vel", body_y_vel, -0.1),
+            # foot slip
+            ("foot_slip", foot_slip, -0.15),
             # penalize dying
             ("termination", termination, -150.0),
         ]
