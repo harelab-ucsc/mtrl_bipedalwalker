@@ -77,6 +77,12 @@ class WalkReward(Wrapper):
         self._leg_1_airtime = 0
         self._leg_2_airtime = 0
 
+        # previous hull velocities and accelerations for jerk calculation
+        self._prev_vel_x: float = 0.0
+        self._prev_vel_y: float = 0.0
+        self._prev_accel_x: float = 0.0
+        self._prev_accel_y: float = 0.0
+
     def _compute_walk_rew(
         self, obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float]]:
@@ -121,51 +127,41 @@ class WalkReward(Wrapper):
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
         joint_vel_l2 = np.mean([obs[5]**2, obs[7]**2, obs[10]**2, obs[12]**2])
-        # leg contact
-        leg_contact = 0
-        if obs[8] == 1 and obs[13] == 1:
-            leg_contact = 1
-        elif obs[8] == 1 or obs[13] == 1:
-            leg_contact = 0.5
-        # body y velocity L2 squared
-        body_y_vel = hull_vel_y ** 2
+
+        accel_x = hull_vel_x - self._prev_vel_x
+        accel_y = hull_vel_y - self._prev_vel_y
+        vel_jerk = (accel_x - self._prev_accel_x) ** 2 + (accel_y - self._prev_accel_y) ** 2
 
         # height above ground (interpolated terrain surface)
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
         height_above_ground = env.hull.position.y - ground_y
 
         # penalize being close the ground
-        TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
-        body_height = max(TARGET_HEIGHT - height_above_ground, 0)
+        TARGET_HEIGHT = 2 * (34 / 30.0) + 0.1  # 2 * LEG_H in world units
+        height_err = TARGET_HEIGHT - height_above_ground
+        body_height = max(height_err * abs(height_err), 0)  # signed squared error
         
-        # foot slip: squared speed of each lower leg while in ground contact.
-        # env.legs[1] and env.legs[3] are the lower (foot) bodies per ContactDetector.
-        # only penalize when contact is active; zero otherwise.
-        foot_1_vel = env.legs[1].linearVelocity
-        foot_2_vel = env.legs[3].linearVelocity
-        slip_1 = (foot_1_vel.x**2 + foot_1_vel.y**2) * obs[8]
-        slip_2 = (foot_2_vel.x**2 + foot_2_vel.y**2) * obs[13]
-        foot_slip = slip_1 + slip_2
+        # print("vel_err:", vel_err)
+        # print("vel_tracking:", vel_tracking)
+        # print("vel_tracking_fine:", vel_tracking_fine)
+        # print("jerk:", vel_jerk)
+        # print()
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
-            ("vel_tracking", vel_tracking, -0.2),
+            ("vel_tracking", vel_tracking, -0.3),
             # fine velocity tracking reward
-            ("vel_tracking_fine", vel_tracking_fine, 0.3),
+            ("vel_tracking_fine", vel_tracking_fine, 1.0),
             # penalize rotational velocity
-            ("hull_ang_vel", hull_ang_vel, -0.15),
-            # leg contact
-            ("leg_contact", leg_contact, 0.2),
+            ("hull_ang_vel", hull_ang_vel, -0.1),
             # penalize deviation from upright
-            ("hull_ang_l2", hull_ang_l2, -0.5),
+            ("hull_ang_l2", hull_ang_l2, -1.0),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.1),
-            # penalize y velocity
-            # ("body_y_vel", body_y_vel, -0.1),
-            # foot slip
-            ("foot_slip", foot_slip, -0.15),
+            ("body_height", body_height, -0.4),
+            # minimize velocity jerk
+            ("vel_jerk", vel_jerk, -0.2),
             # penalize dying
             ("termination", termination, -150.0),
         ]
@@ -176,6 +172,10 @@ class WalkReward(Wrapper):
     def step(
         self, action: Any
     ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
+        env: Any = self.unwrapped
+        pre_vel_x = env.hull.linearVelocity.x
+        pre_vel_y = env.hull.linearVelocity.y
+
         # step environment
         obs, rew, term, trunc, info = super().step(action)
 
@@ -183,6 +183,14 @@ class WalkReward(Wrapper):
         self._step_count += 1
         trunc = trunc or self._step_count >= self._max_steps
         rew, info["reward_terms"] = self._compute_walk_rew(obs, term)
+
+        # update jerk tracking state
+        post_vel_x = env.hull.linearVelocity.x
+        post_vel_y = env.hull.linearVelocity.y
+        self._prev_accel_x = post_vel_x - pre_vel_x
+        self._prev_accel_y = post_vel_y - pre_vel_y
+        self._prev_vel_x = post_vel_x
+        self._prev_vel_y = post_vel_y
 
         # change command velocity if specified
         if (
@@ -273,6 +281,10 @@ class WalkReward(Wrapper):
 
     def reset(self, *, seed=None, options=None) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0
+        self._prev_vel_x = 0.0
+        self._prev_vel_y = 0.0
+        self._prev_accel_x = 0.0
+        self._prev_accel_y = 0.0
         obs, info = super().reset(seed=seed, options=options)
 
         # change command velocity
