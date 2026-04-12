@@ -122,11 +122,11 @@ class WalkReward(Wrapper):
         # minimize L2 joint_velocity
         joint_vel_l2 = np.mean([obs[5]**2, obs[7]**2, obs[10]**2, obs[12]**2])
         # leg contact
-        leg_contact = -1
+        leg_contact = 0
         if obs[8] == 1 and obs[13] == 1:
             leg_contact = 1
         elif obs[8] == 1 or obs[13] == 1:
-            leg_contact = 0
+            leg_contact = 0.5
         # body y velocity L2 squared
         body_y_vel = hull_vel_y ** 2
 
@@ -157,13 +157,13 @@ class WalkReward(Wrapper):
             # leg contact
             ("leg_contact", leg_contact, 0.2),
             # penalize deviation from upright
-            ("hull_ang_l2", hull_ang_l2, -0.25),
+            ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
             ("body_height", body_height, -0.1),
             # penalize y velocity
-            ("body_y_vel", body_y_vel, -0.1),
+            # ("body_y_vel", body_y_vel, -0.1),
             # foot slip
             ("foot_slip", foot_slip, -0.15),
             # penalize dying
