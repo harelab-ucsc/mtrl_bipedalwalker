@@ -136,12 +136,12 @@ class WalkReward(Wrapper):
         body_height = max(TARGET_HEIGHT - height_above_ground, 0)
         
         # airtime bonus
-        # self._leg_1_airtime += 0.01  # 0.2s air time = 10 frames -> 0.1 reward
-        # self._leg_2_airtime += 0.01
-        # if obs[8] == 1:
-        #     self._leg_1_airtime = 0
-        # if obs[13] == 1:
-        #     self._leg_2_airtime = 0
+        self._leg_1_airtime += 0.01  # 0.5s air time = 25 frames -> 0.25 reward
+        self._leg_2_airtime += 0.01
+        if obs[8] == 1:
+            self._leg_1_airtime = 0
+        if obs[13] == 1:
+            self._leg_2_airtime = 0
         
         # self._leg_1_airtime = min(self._leg_1_airtime, 0.4)  # cap at 0.04 / 0.1 = 0.4 reward max (real rew / weight)
         # self._leg_2_airtime = min(self._leg_2_airtime, 0.4)
@@ -161,7 +161,7 @@ class WalkReward(Wrapper):
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
-            ("joint_vel_l2", joint_vel_l2, -0.1),  # -0.02
+            ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
             ("body_height", body_height, -0.3),
             # penalize dying
