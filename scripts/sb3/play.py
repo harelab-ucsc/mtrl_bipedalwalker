@@ -19,11 +19,7 @@ from wrappers.plot_env import Plotter
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
 # EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
-<<<<<<< HEAD
-EXPERIMENT_NAME = "walk_forward/walk_forward_6-16_17_38-2026_04_11"
-=======
-EXPERIMENT_NAME = "walk_forward/walk_forward_4-01_11_54-2026_04_11"
->>>>>>> 4ea92b5fc8d1782a83a7afb1feeaaca61c0bd820
+EXPERIMENT_NAME = "walk_forward/walk_forward_7-17_41_30-2026_04_11"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 

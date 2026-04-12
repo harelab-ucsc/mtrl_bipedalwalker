@@ -101,6 +101,7 @@ class WalkReward(Wrapper):
 
         env: Any = self.unwrapped
         hull_vel_x = env.hull.linearVelocity.x
+        hull_vel_y = env.hull.linearVelocity.y
         hull_ang_vel = env.hull.angularVelocity
         hull_ang = env.hull.angle
         hull_x = env.hull.position.x
@@ -121,18 +122,20 @@ class WalkReward(Wrapper):
         # minimize L2 joint_velocity
         joint_vel_l2 = np.mean([obs[5]**2, obs[7]**2, obs[10]**2, obs[12]**2])
         # leg contact
-        leg_contact = 0
+        leg_contact = -1
         if obs[8] == 1 and obs[13] == 1:
             leg_contact = 1
         elif obs[8] == 1 or obs[13] == 1:
-            leg_contact = 0.2
+            leg_contact = 0
+        # body y velocity L2 squared
+        body_y_vel = hull_vel_y ** 2
 
         # height above ground (interpolated terrain surface)
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
         height_above_ground = env.hull.position.y - ground_y
 
         # penalize being close the ground
-        TARGET_HEIGHT = 2 * (34 / 30.0) - 0.15  # 2 * LEG_H in world units
+        TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
         body_height = max(TARGET_HEIGHT - height_above_ground, 0)
         
         # airtime bonus
@@ -153,17 +156,21 @@ class WalkReward(Wrapper):
             ("vel_tracking_fine", vel_tracking_fine, 0.3),
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
-            # air time bonux
+            # air time bonus
+            
             # ("leg_1_airtime", self._leg_1_airtime, 0.1),
             # ("leg_2_airtime", self._leg_2_airtime, 0.1),
+            
             # leg contact
-            ("leg_contact", leg_contact, 0.1),
+            ("leg_contact", leg_contact, 0.2),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -0.5),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.3),
+            ("body_height", body_height, -0.1),
+            # penalize y velocity
+            ("body_y_vel", body_y_vel, -0.2),
             # penalize dying
             ("termination", termination, -150.0),
         ]
