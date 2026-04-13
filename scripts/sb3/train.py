@@ -38,10 +38,10 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "walk_forward/walk_forward_9" + datetime.today().strftime(
+EXPERIMENT_NAME = "walk_forward/walk_forward_10" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
-TIMESTEPS = 200 * 2048 * 14
+TIMESTEPS = 800 * 1024 * 14
 
 # =========================================
 
@@ -54,9 +54,11 @@ def main():
         env = Monitor(
             ProprioWalkReward(
                 env,
+                ep_time=20,
                 vel_sample_range=(0, 5),
-                vel_sample_zero=0.05,
+                vel_sample_zero=0.15,
                 vel_switching_freq=5,
+                vel_interp_speed=0.5,
             )
         )
         return env
@@ -72,7 +74,7 @@ def main():
         "MlpPolicy",
         train_env,
         verbose=0,
-        learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
+        learning_rate=LinearSchedule(5e-4, 3e-5, 0.35),
         n_epochs=15,
         n_steps=1024,
         batch_size=64,
