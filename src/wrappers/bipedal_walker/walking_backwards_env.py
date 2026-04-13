@@ -1,6 +1,8 @@
 from typing import Any, SupportsFloat
 
 from Box2D import b2Vec2
+from gymnasium import Env
+from gymnasium.core import ActType, ObsType
 import numpy as np
 import math
 
@@ -8,6 +10,11 @@ from wrappers.bipedal_walker.walking_env import WalkReward
 
 
 class WalkBackReward(WalkReward):
+    def __init__(self, env: Env[ObsType, ActType], ep_time: int = 10, man_vel_ctrl: bool = False, vel_switching_freq: float = 10, vel_interp_speed: float = 1, vel_sample_range: tuple[float, float] = (-2.5, 2.5), vel_sample_zero: float = 0.2):
+        super().__init__(env, ep_time, man_vel_ctrl, vel_switching_freq, vel_interp_speed, vel_sample_range, vel_sample_zero)
+        
+        self._air_time = 0;  # tracks total air time
+    
     def _compute_walk_rew(
         self, obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float]]:
@@ -50,6 +57,11 @@ class WalkBackReward(WalkReward):
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
         joint_vel_l2 = np.mean([obs[5]**2, obs[7]**2, obs[10]**2, obs[12]**2])
+        # airtime
+        if obs[8] and obs[13]:
+            self._air_time += 1  # total frames that the body as been in the air
+        else:
+            self._air_time = 0
 
         accel_x = hull_vel_x - self._prev_vel_x
         accel_y = hull_vel_y - self._prev_vel_y
@@ -78,9 +90,11 @@ class WalkBackReward(WalkReward):
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.2),
+            ("body_height", body_height, -0.4),
             # penalize hull y velocity (don't bounce up and down)
             ("vel_y", vel_y, -0.1),
+            # airtime penalty
+            ("air_time", self._air_time, -0.02),  # 30 frames -> 0.06 penalty
             # minimize velocity jerk
             ("vel_jerk", vel_jerk, -0.2),
             # penalize dying
