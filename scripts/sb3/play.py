@@ -20,7 +20,7 @@ from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackRew
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
 # EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
-EXPERIMENT_NAME = "walk_backward/walk_backward_1-00_19_26-2026_04_13"
+EXPERIMENT_NAME = "walk_backward/walk_backward_2-01_36_17-2026_04_13"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 

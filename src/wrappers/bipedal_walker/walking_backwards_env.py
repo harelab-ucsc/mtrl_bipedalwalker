@@ -54,6 +54,8 @@ class WalkBackReward(WalkReward):
         accel_x = hull_vel_x - self._prev_vel_x
         accel_y = hull_vel_y - self._prev_vel_y
         vel_jerk = (accel_x - self._prev_accel_x) ** 2 + (accel_y - self._prev_accel_y) ** 2
+        
+        vel_y = hull_vel_y ** 2;
 
         # height above ground (interpolated terrain surface)
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
@@ -76,7 +78,9 @@ class WalkBackReward(WalkReward):
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.1),
+            ("body_height", body_height, -0.2),
+            # penalize hull y velocity (don't bounce up and down)
+            ("vel_y", vel_y, -0.1),
             # minimize velocity jerk
             ("vel_jerk", vel_jerk, -0.2),
             # penalize dying
