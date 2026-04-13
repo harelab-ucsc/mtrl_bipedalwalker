@@ -7,11 +7,12 @@ from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 
 from utils.paths import MODELS_DIR
+from wrappers.plot_env import Plotter
 from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
 from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
-from wrappers.plot_env import Plotter
+from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackReward
 
 
 # =========================================
@@ -19,7 +20,7 @@ from wrappers.plot_env import Plotter
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
 # EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
-EXPERIMENT_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
+EXPERIMENT_NAME = "walk_backward/walk_backward_1-00_19_26-2026_04_13"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
@@ -44,11 +45,11 @@ def main():
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
     # wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
-    wrap_env = ProprioWalkReward(
+    wrap_env = ProprioWalkBackReward(
         env,
         ep_time=15,
         vel_switching_freq=3,
-        vel_sample_range=(0, 5),
+        vel_sample_range=(-5, 0),
         vel_sample_zero=0.05,
         vel_interp_speed=1,
     )

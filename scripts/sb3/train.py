@@ -29,6 +29,7 @@ from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
 from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
+from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackReward
 
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
@@ -38,10 +39,10 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "walk_forward/walk_forward_10" + datetime.today().strftime(
+EXPERIMENT_NAME = "walk_backward/walk_backward_1" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
-TIMESTEPS = 800 * 1024 * 14
+TIMESTEPS = 300 * 1024 * 14
 
 # =========================================
 
@@ -52,12 +53,12 @@ def main():
     def make_env():
         env = gym.make("BipedalWalker-v3")
         env = Monitor(
-            ProprioWalkReward(
+            ProprioWalkBackReward(
                 env,
-                ep_time=20,
-                vel_sample_range=(0, 5),
+                ep_time=10,
+                vel_sample_range=(-5, 0),
                 vel_sample_zero=0.15,
-                vel_switching_freq=5,
+                vel_switching_freq=10,  # disable switching for now
                 vel_interp_speed=0.5,
             )
         )
@@ -74,7 +75,7 @@ def main():
         "MlpPolicy",
         train_env,
         verbose=0,
-        learning_rate=LinearSchedule(5e-4, 3e-5, 0.35),
+        learning_rate=LinearSchedule(5e-4, 3e-5, 0.5),
         n_epochs=15,
         n_steps=1024,
         batch_size=64,
