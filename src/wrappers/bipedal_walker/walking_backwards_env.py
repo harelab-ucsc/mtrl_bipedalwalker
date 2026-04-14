@@ -161,17 +161,17 @@ class WalkBackReward(WalkReward):
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.2),
+            ("body_height", body_height, -0.6),
             # penalize hull y velocity (don't bounce up and down)
             ("vel_y", vel_y, -0.1),
             # leg alternating bonus
-            ("leg_alt_bonus", leg_alt_bonus, 0.5),
+            # ("leg_alt_bonus", leg_alt_bonus, 1.0),
             # penalty for hopping
-            ("hopping_penalty", hopping_penalty, -0.3),
+            ("hopping_penalty", hopping_penalty, -2.0),
             # minimize velocity jerk
             ("vel_jerk", vel_jerk, -0.2),
             # penalize dying
-            ("termination", termination, -150.0),
+            ("termination", termination, -80.0),
         ]
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
