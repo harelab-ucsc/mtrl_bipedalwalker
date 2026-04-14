@@ -10,11 +10,31 @@ from wrappers.bipedal_walker.walking_env import WalkReward
 
 
 class WalkBackReward(WalkReward):
-    def __init__(self, env: Env[ObsType, ActType], ep_time: int = 10, man_vel_ctrl: bool = False, vel_switching_freq: float = 10, vel_interp_speed: float = 1, vel_sample_range: tuple[float, float] = (-2.5, 2.5), vel_sample_zero: float = 0.2):
-        super().__init__(env, ep_time, man_vel_ctrl, vel_switching_freq, vel_interp_speed, vel_sample_range, vel_sample_zero)
-        
-        self._air_time = 0;  # tracks total air time
-    
+    def __init__(
+        self,
+        env: Env[ObsType, ActType],
+        ep_time: int = 10,
+        man_vel_ctrl: bool = False,
+        vel_switching_freq: float = 10,
+        vel_interp_speed: float = 1,
+        vel_sample_range: tuple[float, float] = (-2.5, 2.5),
+        vel_sample_zero: float = 0.2,
+    ):
+        super().__init__(
+            env,
+            ep_time,
+            man_vel_ctrl,
+            vel_switching_freq,
+            vel_interp_speed,
+            vel_sample_range,
+            vel_sample_zero,
+        )
+
+        self._last_leg_contact = -1  # 0 -> left; 1 -> right; -1 -> unset
+        self._last_obs_8 = 0.0
+        self._last_obs_13 = 0.0
+        self._steps_since_switch = 0
+
     def _compute_walk_rew(
         self, obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float]]:
@@ -56,18 +76,69 @@ class WalkBackReward(WalkReward):
         # termination
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
-        joint_vel_l2 = np.mean([obs[5]**2, obs[7]**2, obs[10]**2, obs[12]**2])
-        # airtime
-        if obs[8] and obs[13]:
-            self._air_time += 1  # total frames that the body as been in the air
-        else:
-            self._air_time = 0
+        joint_vel_l2 = np.mean([obs[5] ** 2, obs[7] ** 2, obs[10] ** 2, obs[12] ** 2])
+
+        # print("leg 1 contact [before / after]:", self._last_obs_8, obs[8])
+        # print("leg 2 contact [before / after]:", self._last_obs_13, obs[13])
+        # print("last contact leg:", self._last_leg_contact)
+        # print("step since switch:", self._steps_since_switch)
+        # print()
+
+        # leg alternating bonus
+        # reward if the stepping goes left -> right -> left
+        leg_alt_bonus = 0
+        hopping_penalty = 0
+        # initialize last leg contact if necessary
+        if self._last_leg_contact == -1:  # ambiguous last
+            if obs[8]:
+                self._last_leg_contact = 0
+            elif obs[13]:
+                self._last_leg_contact = 1
+        elif self._last_leg_contact == 0:  # last one is leg 1
+            # leg 2 contact on rising edge = reward
+            if obs[13] and not self._last_obs_13:
+                # scale to stride length
+                leg_alt_bonus = np.tanh(self._steps_since_switch / 30.0)
+                self._last_leg_contact = 1  # switch to leg 2 now
+                self._steps_since_switch = -1
+            # leg 1 contact on rising edge again = penalty
+            elif obs[8] and not self._last_obs_8:
+                hopping_penalty = 1
+                self._steps_since_switch = -1
+        elif self._last_leg_contact == 1:  # last one is leg 2
+            # leg 1 contact on rising edge AND leg 2 is lifted = reward
+            if obs[8] and not self._last_obs_8:
+                # scale to stride length
+                leg_alt_bonus = np.tanh(self._steps_since_switch / 30.0)
+                self._last_leg_contact = 0  # switch to leg 1 now
+                self._steps_since_switch = -1
+            elif obs[13] and not self._last_obs_13:  # same leg again
+                hopping_penalty = 1
+                self._steps_since_switch = -1
+        # penalize hopping on the same leg
+        
+        # only count when the last state is not ambiguous
+        self._steps_since_switch += 0 if self._last_leg_contact == -1 else 1
+            
+        # print("leg 1 contact [before / after]:", self._last_obs_8, obs[8])
+        # print("leg 2 contact [before / after]:", self._last_obs_13, obs[13])
+        # print("last contact leg:", self._last_leg_contact + 1)
+        # print("step since switch:", self._steps_since_switch)
+        # print("hop penalty:", hopping_penalty * -0.3)
+        # print("leg alt bonus:", leg_alt_bonus * 0.3)
+        # print("\n ======================== \n")
+        
+        # update last contact states
+        self._last_obs_8 = obs[8]
+        self._last_obs_13 = obs[13]
 
         accel_x = hull_vel_x - self._prev_vel_x
         accel_y = hull_vel_y - self._prev_vel_y
-        vel_jerk = (accel_x - self._prev_accel_x) ** 2 + (accel_y - self._prev_accel_y) ** 2
-        
-        vel_y = hull_vel_y ** 2;
+        vel_jerk = (accel_x - self._prev_accel_x) ** 2 + (
+            accel_y - self._prev_accel_y
+        ) ** 2
+
+        vel_y = hull_vel_y**2
 
         # height above ground (interpolated terrain surface)
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
@@ -86,15 +157,17 @@ class WalkBackReward(WalkReward):
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # penalize deviation from upright
-            ("hull_ang_l2", hull_ang_l2, -1.5),
+            ("hull_ang_l2", hull_ang_l2, -1.0),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.1),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
-            ("body_height", body_height, -0.4),
+            ("body_height", body_height, -0.2),
             # penalize hull y velocity (don't bounce up and down)
             ("vel_y", vel_y, -0.1),
-            # airtime penalty
-            ("air_time", self._air_time, -0.02),  # 30 frames -> 0.06 penalty
+            # leg alternating bonus
+            ("leg_alt_bonus", leg_alt_bonus, 0.5),
+            # penalty for hopping
+            ("hopping_penalty", hopping_penalty, -0.3),
             # minimize velocity jerk
             ("vel_jerk", vel_jerk, -0.2),
             # penalize dying
@@ -110,6 +183,11 @@ class WalkBackReward(WalkReward):
         self._prev_vel_y = 0.0
         self._prev_accel_x = 0.0
         self._prev_accel_y = 0.0
+        self._last_leg_contact = -1
+        self._steps_since_switch = 0
+        self._last_obs_8 = 0.0
+        self._last_obs_13 = 0.0
+
         obs, info = super(WalkReward, self).reset(seed=seed, options=options)
 
         # change command velocity

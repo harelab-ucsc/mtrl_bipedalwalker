@@ -39,10 +39,10 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "walk_backward/walk_backward_3" + datetime.today().strftime(
+EXPERIMENT_NAME = "walk_backward/walk_backward_5_7" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
-TIMESTEPS = 300 * 1024 * 14
+TIMESTEPS = 400 * 1024 * 14
 
 # =========================================
 
@@ -57,8 +57,8 @@ def main():
                 env,
                 ep_time=10,
                 vel_sample_range=(-5, 0),
-                vel_sample_zero=0.1,
-                vel_switching_freq=10,  # disable switching for now
+                vel_sample_zero=0.2,
+                vel_switching_freq=5,  # disable switching for now
                 vel_interp_speed=0.5,
             )
         )
