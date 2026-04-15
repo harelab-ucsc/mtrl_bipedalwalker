@@ -154,6 +154,10 @@ class HopReward(Wrapper):
             # penalize dying
             ("termination", termination, -150.0),
         ]
+        
+        # for i in rewards_cfg:
+        #     print(f"{i[0]}: {i[1] * i[2]}")
+        # print()
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
         return sum(components.values()), components
@@ -287,7 +291,7 @@ class HopReward(Wrapper):
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
         HULL_Y_SAMPLE_LIM = (0.2, 0.3)
-        HULL_X_SAMPLE_LIM = (0.0, 45.0)
+        HULL_X_SAMPLE_LIM = (40.0, 80.0)
         HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_X_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_Y_SAMPLE_LIM = (0, 0)

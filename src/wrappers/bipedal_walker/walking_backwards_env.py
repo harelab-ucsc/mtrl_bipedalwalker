@@ -6,6 +6,8 @@ from gymnasium.core import ActType, ObsType
 import numpy as np
 import math
 
+from pprint import pprint
+
 from wrappers.bipedal_walker.walking_env import WalkReward
 
 
@@ -69,10 +71,12 @@ class WalkBackReward(WalkReward):
         vel_tracking = vel_err**2
         # fine velocity tracking error
         vel_tracking_fine = 1 - np.tanh(40 * vel_tracking)
+        
         # hull angle velocity
         hull_ang_vel = abs(hull_ang_vel) ** 2
         # hull angle deviation from 0
         hull_ang_l2 = hull_ang**2
+        
         # termination
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
@@ -151,28 +155,32 @@ class WalkBackReward(WalkReward):
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
-            ("vel_tracking", vel_tracking, -0.3),
+            ("vel_tracking", vel_tracking, -0.1),
             # fine velocity tracking reward
             ("vel_tracking_fine", vel_tracking_fine, 1.0),
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # penalize deviation from upright
-            ("hull_ang_l2", hull_ang_l2, -1.0),
+            ("hull_ang_l2", hull_ang_l2, -2.0),
             # penalize joint velocity
-            ("joint_vel_l2", joint_vel_l2, -0.1),
+            ("joint_vel_l2", joint_vel_l2, -0.05),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
             ("body_height", body_height, -0.6),
             # penalize hull y velocity (don't bounce up and down)
             ("vel_y", vel_y, -0.1),
             # leg alternating bonus
-            # ("leg_alt_bonus", leg_alt_bonus, 1.0),
+            ("leg_alt_bonus", leg_alt_bonus, 1.0),
             # penalty for hopping
-            ("hopping_penalty", hopping_penalty, -2.0),
+            ("hopping_penalty", hopping_penalty, -0.3),
             # minimize velocity jerk
-            ("vel_jerk", vel_jerk, -0.2),
+            ("vel_jerk", vel_jerk, -0.1),
             # penalize dying
-            ("termination", termination, -80.0),
+            ("termination", termination, -150.0),
         ]
+        
+        # for i in rewards_cfg:
+        #     print(f"{i[0]}: {i[1] * i[2]}")
+        # print()
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
         return sum(components.values()), components

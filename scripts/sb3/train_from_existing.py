@@ -39,7 +39,11 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-EXPERIMENT_NAME = "walk_backward/walk_backward_7_4" + datetime.today().strftime(
+# PRIOR_EXP_NAME = "walk_backward/walk_backward_5_7-21_50_59-2026_04_13"
+PRIOR_EXP_NAME = "walk_backward/hopped_walk_backward_7_1"
+PRIOR_MODEL = "best/best_model"
+
+EXPERIMENT_NAME = "walk_backward/walk_backward_7_6" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
 TIMESTEPS = 400 * 1024 * 14
@@ -67,22 +71,22 @@ def main():
     train_env = SubprocVecEnv([make_env for _ in range(14)])
     eval_env = SubprocVecEnv([make_env for _ in range(5)])
 
-    policy_kwargs = dict(
-        activation_fn=torch.nn.ELU, net_arch=dict(pi=[256, 128, 64], vf=[256, 128, 64])
+    # load in model from checkpoint
+    prior_model_path = MODELS_DIR / f"{PRIOR_EXP_NAME}/{PRIOR_MODEL}.zip"
+    model = PPO.load(
+        prior_model_path,
+        env=train_env,
+        custom_objects={
+            "learning_rate": LinearSchedule(1e-4, 3e-5, 0.8),
+            "n_epochs": 25,
+            "n_steps": 1024,
+            "batch_size": 64,
+            "ent_coef": 0.002,
+        },
     )
-
-    model = PPO(
-        "MlpPolicy",
-        train_env,
-        verbose=0,
-        learning_rate=LinearSchedule(5e-4, 3e-5, 0.8),
-        n_epochs=15,
-        n_steps=1024,
-        batch_size=64,
-        ent_coef=0.002,
-        policy_kwargs=policy_kwargs,
-        device=torch.device("cpu"),
-    )
+    model.set_env(train_env)
+    
+    # configure logger
     model.set_logger(configure(str(LOGS_DIR / EXPERIMENT_NAME), ["tensorboard"]))
     train_env.reset()
 
@@ -100,31 +104,34 @@ def main():
     )
 
     # print out model and environment settings
-    print_run_info(train_env, model, EXPERIMENT_NAME)
+    print_run_info(train_env, model, EXPERIMENT_NAME, PRIOR_EXP_NAME, PRIOR_MODEL)
 
     start_time = time.time()
     model.learn(
         total_timesteps=TIMESTEPS,
-        reset_num_timesteps=False,
+        reset_num_timesteps=True,  # set for tensorboard
         callback=CallbackList(
             [StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]
         ),
         progress_bar=True,
     )
-    
 
     duration = fmt_duration(time.time() - start_time)
     print(f"Done! Total time: {duration}")
     print(f"Experiment name: {EXPERIMENT_NAME}")
 
     subprocess.run(
-        ["osascript", "-e", f'display notification "Finished in {duration}" with title "Training complete" subtitle "{EXPERIMENT_NAME}"'],
+        [
+            "osascript",
+            "-e",
+            f'display notification "Finished in {duration}" with title "Training complete" subtitle "{EXPERIMENT_NAME}"',
+        ],
         check=False,
     )
     play_sound(ROOT / "assets" / "train_finish.mp3")
 
 
-def print_run_info(env, model, experiment_name):
+def print_run_info(env, model, experiment_name, prior_exp_name, prior_model_name):
     env_id = env.get_attr("spec")[0].id
     obs = env.observation_space
     act = env.action_space
@@ -138,6 +145,8 @@ def print_run_info(env, model, experiment_name):
 
     print(f"\n{'=' * 44}")
     print(f"  experiment  {experiment_name}")
+    print(f"  continuing off from  {prior_exp_name}")
+    print(f"  using model  {prior_model_name}")
     print(f"{'=' * 44}")
 
     section(
@@ -183,8 +192,8 @@ def print_run_info(env, model, experiment_name):
     )
 
     print(f"\n{'=' * 44}\n")
-    
-    
+
+
 def play_sound(path):
     pygame.mixer.init()
     pygame.mixer.music.load(str(path))

@@ -19,8 +19,14 @@ from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackRew
 
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
-# EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
-EXPERIMENT_NAME = "walk_backward/walk_backward_5_7-21_50_59-2026_04_13"
+EXPERIMENT_NAME = "walk_backward/hopped_walk_backward_7_1"
+# EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
+# EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
+# EXPERIMENT_NAME = "walk_backward/walk_backward_7_2-00_06_27-2026_04_15"
+# EXPERIMENT_NAME = "walk_backward/walk_backward_7_3-00_06_54-2026_04_15"
+# EXPERIMENT_NAME = "walk_backward/walk_backward_7_4-00_07_13-2026_04_15"
+# EXPERIMENT_NAME = "walk_backward/walk_backward_7_5-00_16_04-2026_04_15"
+# EXPERIMENT_NAME = "walk_backward/walk_backward_7_6-00_22_45-2026_04_15"
 MODEL_CHECKPOINT = "best/best_model"
 DRAW_PLOTS = False
 
@@ -45,13 +51,13 @@ def main():
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
     # wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
-    wrap_env = ProprioWalkBackReward(
+    wrap_env = ProprioHopReward(
         env,
         ep_time=15,
         vel_switching_freq=3,
         vel_sample_range=(-5, 0),
-        vel_sample_zero=0.05,
-        vel_interp_speed=1,
+        vel_sample_zero=0.15,
+        vel_interp_speed=0.5,
     )
     # wrap_env = env
     if DRAW_PLOTS:
