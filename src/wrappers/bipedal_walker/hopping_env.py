@@ -59,7 +59,6 @@ class HopReward(Wrapper):
         self._max_vel_buf_size: int = np.floor(
             vel_interp_speed * FPS
         )  # smooth out transitions
-        # TODO: implement a cmd_vel smoothing buffer if necessary (to smoothly switch btwn one command vel to another)
 
         base = self.env.observation_space
         self.observation_space = spaces.Box(
@@ -67,6 +66,11 @@ class HopReward(Wrapper):
             high=np.append(base.high, np.inf),  # type: ignore
             dtype=np.float64,
         )
+        
+        self._last_leg_contact = -1  # 0 -> left; 1 -> right; -1 -> unset
+        self._last_obs_8 = 0.0
+        self._last_obs_13 = 0.0
+        self._steps_since_hop = 0
 
     def _compute_hop_rew(
         self, obs: np.ndarray, terminated: bool
@@ -110,6 +114,7 @@ class HopReward(Wrapper):
         # leg lift
         leg_1_contact = 1 if obs[8] == 1 and obs[13] == 0 else -1
         leg_2_contact = 1 if obs[13] == 1 else 0  # penalize any leg 2 contact
+        both_leg_contact = 1 if obs[8] == 1 and obs[13] == 1 else 0
         # hull angle deviation from 0
         hull_ang_l2 = hull_ang**2
         # termination
@@ -131,6 +136,53 @@ class HopReward(Wrapper):
             obs[8] == 1 or obs[13] == 1 or body_height < -0.15
         ):  # either foot touching or height is too low → not airborne
             hop_bonus = 0
+            
+        # leg alternating penalty + hop bonus
+        # penalize if the stepping goes left -> right -> left
+        leg_alt_penalty = 0
+        hopping_bonus = 0
+        # initialize last leg contact if necessary
+        if self._last_leg_contact == -1:  # ambiguous last
+            if obs[8]:
+                self._last_leg_contact = 0
+            elif obs[13]:
+                self._last_leg_contact = 1
+        elif self._last_leg_contact == 0:  # last one is leg 1
+            # leg 1 contact on rising edge = reward
+            if obs[8] and not self._last_obs_8:
+                # scale to stride length
+                hopping_bonus = np.tanh(self._steps_since_hop / 30.0)
+                self._steps_since_hop = -1
+            # leg 1 contact on rising edge again = penalty
+            elif obs[13] and not self._last_obs_13:
+                self._last_leg_contact = 1  # switch to leg 2 now
+                leg_alt_penalty = 1
+                self._steps_since_hop = -1
+        elif self._last_leg_contact == 1:  # last one is leg 2
+            # leg 2 contact on rising edge = reward
+            if obs[13] and not self._last_obs_13:
+                # scale to stride length
+                hopping_bonus = np.tanh(self._steps_since_hop / 30.0)
+                self._steps_since_hop = -1
+            elif obs[13] and not self._last_obs_13:  # same leg again
+                self._last_leg_contact = 0  # switch to leg 1 now
+                leg_alt_penalty = 1
+                self._steps_since_hop = -1
+        
+        # only count when the last state is not ambiguous
+        self._steps_since_hop += 0 if self._last_leg_contact == -1 else 1
+        
+        # print("leg 1 contact [before / after]:", self._last_obs_8, obs[8])
+        # print("leg 2 contact [before / after]:", self._last_obs_13, obs[13])
+        # print("last contact leg:", self._last_leg_contact + 1)
+        # print("step since hop:", self._steps_since_hop)
+        # print("hop bonus:", hopping_bonus * 0.3)
+        # print("leg alt penalty:", leg_alt_penalty * -0.3)
+        # print("\n ======================== \n")
+        
+        # update last contact states
+        self._last_obs_8 = obs[8]
+        self._last_obs_13 = obs[13]
 
         # print(body_height + 0.15, hop_bonus)
 
@@ -142,11 +194,19 @@ class HopReward(Wrapper):
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
             # reward strict single-leg contact
-            ("leg_1_contact", leg_1_contact, 0.15),
-            ("leg_2_contact", leg_2_contact, -1.1),
-            ("hop_bonus", hop_bonus, 0.2),
+            # ("leg_1_contact", leg_1_contact, 0.15),
+            # ("leg_2_contact", leg_2_contact, -1.1),
+            # ("hop_bonus", hop_bonus, 0.2),
+            
+            # leg alternating penalty
+            ("leg_alt_penalty", leg_alt_penalty, -0.3),
+            # reward for hopping
+            ("hopping_bonus", hopping_bonus, 1.0),
+            # penalty for having both legs on the ground
+            ("both_leg_contact", both_leg_contact, -0.5),
+            
             # penalize deviation from upright
-            ("hull_ang_l2", hull_ang_l2, -0.5),
+            ("hull_ang_l2", hull_ang_l2, -1.0),
             # penalize joint velocity
             ("joint_vel_l2", joint_vel_l2, -0.02),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
@@ -154,6 +214,10 @@ class HopReward(Wrapper):
             # penalize dying
             ("termination", termination, -150.0),
         ]
+        
+        # for i in rewards_cfg:
+        #     print(f"{i[0]}: {i[1] * i[2]}")
+        # print()
 
         components = {name: float(r * w) for name, r, w in rewards_cfg}
         return sum(components.values()), components
@@ -287,7 +351,7 @@ class HopReward(Wrapper):
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
         HULL_Y_SAMPLE_LIM = (0.2, 0.3)
-        HULL_X_SAMPLE_LIM = (0.0, 45.0)
+        HULL_X_SAMPLE_LIM = (40.0, 80.0)
         HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_X_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_Y_SAMPLE_LIM = (0, 0)

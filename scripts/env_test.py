@@ -10,6 +10,7 @@ from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
 from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
+from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackReward
 
 SEED = 42
 DRAW_PLOTS = False
