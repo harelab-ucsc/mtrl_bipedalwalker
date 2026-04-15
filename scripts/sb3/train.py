@@ -25,6 +25,7 @@ from pynput import keyboard as kb
 from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
 from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.bipedal_walker.sitting_env import SitReward
 from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
@@ -117,11 +118,17 @@ def main():
     print(f"Done! Total time: {duration}")
     print(f"Experiment name: {EXPERIMENT_NAME}")
 
-    subprocess.run(
-        ["osascript", "-e", f'display notification "Finished in {duration}" with title "Training complete" subtitle "{EXPERIMENT_NAME}"'],
-        check=False,
-    )
-    play_sound(ROOT / "assets" / "train_finish.mp3")
+    try:
+        subprocess.run(
+            ["osascript", "-e", f'display notification "Finished in {duration}" with title "Training complete" subtitle "{EXPERIMENT_NAME}"'],
+            check=False,
+        )
+    except FileNotFoundError:
+        pass  # not on macOS
+    try:
+        play_sound(ROOT / "assets" / "train_finish.mp3")
+    except Exception as e:
+        print(f"(skipping play_sound: {e})")
 
 
 def print_run_info(env, model, experiment_name):

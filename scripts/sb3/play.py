@@ -10,6 +10,8 @@ from utils.paths import MODELS_DIR
 from wrappers.plot_env import Plotter
 from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
+from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.bipedal_walker.sitting_env import SitReward
 from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
 from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
 from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackReward
@@ -77,7 +79,7 @@ def main():
     # load model
     print(f'Loading model "{MODEL_CHECKPOINT}"...')
     model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"
-    model = PPO.load(model_path, env=wrap_env)
+    model = PPO.load(model_path, env=wrap_env, device="cpu")
 
     total_rewards = 0
 
@@ -112,7 +114,7 @@ def main():
 
         assert wrap_env.action_space.shape is not None
 
-        action, _states = model.predict(obs)
+        action, _states = model.predict(obs, deterministic=True)
         obs, rewards, term, trunc, _ = wrap_env.step(action)
         total_rewards += float(rewards)
 
