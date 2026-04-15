@@ -40,10 +40,11 @@ if not os.path.exists(LOGS_DIR):
 # =========================================
 
 # PRIOR_EXP_NAME = "walk_backward/walk_backward_5_7-21_50_59-2026_04_13"
-PRIOR_EXP_NAME = "walk_backward/hopped_walk_backward_7_1"
+# PRIOR_EXP_NAME = "walk_backward/hopped_walk_backward_7_1"
+PRIOR_EXP_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
 PRIOR_MODEL = "best/best_model"
 
-EXPERIMENT_NAME = "walk_backward/walk_backward_7_6" + datetime.today().strftime(
+EXPERIMENT_NAME = "hop_backward/hop_backward_3_2" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
 TIMESTEPS = 400 * 1024 * 14
@@ -57,7 +58,7 @@ def main():
     def make_env():
         env = gym.make("BipedalWalker-v3")
         env = Monitor(
-            ProprioWalkBackReward(
+            ProprioHopReward(
                 env,
                 ep_time=10,
                 vel_sample_range=(-5, 0),

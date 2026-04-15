@@ -110,7 +110,7 @@ class WalkBackReward(WalkReward):
                 hopping_penalty = 1
                 self._steps_since_switch = -1
         elif self._last_leg_contact == 1:  # last one is leg 2
-            # leg 1 contact on rising edge AND leg 2 is lifted = reward
+            # leg 1 contact on rising edge = reward
             if obs[8] and not self._last_obs_8:
                 # scale to stride length
                 leg_alt_bonus = np.tanh(self._steps_since_switch / 30.0)
@@ -119,7 +119,6 @@ class WalkBackReward(WalkReward):
             elif obs[13] and not self._last_obs_13:  # same leg again
                 hopping_penalty = 1
                 self._steps_since_switch = -1
-        # penalize hopping on the same leg
         
         # only count when the last state is not ambiguous
         self._steps_since_switch += 0 if self._last_leg_contact == -1 else 1
