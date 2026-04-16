@@ -8,13 +8,13 @@ from pynput.keyboard import Key, KeyCode
 
 from utils.paths import MODELS_DIR
 from wrappers.plot_env import Plotter
+from wrappers.plot_reward_env import RewardPlotter
 from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
+from wrappers.bipedal_walker.walking_backwards_env import WalkBackReward
 from wrappers.bipedal_walker.standing_env import StandReward
 from wrappers.bipedal_walker.sitting_env import SitReward
-from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
-from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
-from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackReward
+from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 
 # =========================================
@@ -33,7 +33,10 @@ EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_5-00_16_04-2026_04_15"
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_6-00_22_45-2026_04_15"
 MODEL_CHECKPOINT = "best/best_model"
-DRAW_PLOTS = False
+# None  → no plots
+# "obs" → proprioceptive observation dashboard (Plotter)
+# "reward" → per-term reward breakdown dashboard (RewardPlotter)
+PLOT_MODE: str | None = "reward"
 
 # =========================================
 
@@ -56,17 +59,21 @@ def main():
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
     # wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
-    wrap_env = ProprioHopReward(
-        env,
-        ep_time=15,
-        vel_switching_freq=3,
-        vel_sample_range=(-5, 0),
-        vel_sample_zero=0.15,
-        vel_interp_speed=0.5,
+    wrap_env = ProprioObsWrapper(
+        HopReward(
+            env,
+            ep_time=15,
+            vel_switching_freq=3,
+            vel_sample_range=(-5, 0),
+            vel_sample_zero=0.15,
+            vel_interp_speed=0.5,
+        )
     )
     # wrap_env = env
-    if DRAW_PLOTS:
+    if PLOT_MODE == "obs":
         wrap_env = Plotter(wrap_env)
+    elif PLOT_MODE == "reward":
+        wrap_env = RewardPlotter(wrap_env)
 
     pygame.init()
     screen = pygame.display.set_mode((600, 400))

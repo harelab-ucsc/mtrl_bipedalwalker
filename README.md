@@ -11,7 +11,3 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
-
-## Credits
-
-Manual PPO implementation is based on AndersonPeng's [ppo_tutorial](https://github.com/AndersonPeng/ppo_tutorial).

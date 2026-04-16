@@ -39,7 +39,7 @@ class WalkBackReward(WalkReward):
 
     def _compute_walk_rew(
         self, obs: np.ndarray, terminated: bool
-    ) -> tuple[SupportsFloat, dict[str, float]]:
+    ) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float]]:
         """
         Observation layout (24 elements):
             [0]       hull_ang
@@ -181,8 +181,10 @@ class WalkBackReward(WalkReward):
         #     print(f"{i[0]}: {i[1] * i[2]}")
         # print()
 
+        raw = {name: float(r) for name, r, w in rewards_cfg}
+        weights = {name: float(w) for name, r, w in rewards_cfg}
         components = {name: float(r * w) for name, r, w in rewards_cfg}
-        return sum(components.values()), components
+        return sum(components.values()), components, raw, weights
 
     def reset(self, *, seed=None, options=None) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0

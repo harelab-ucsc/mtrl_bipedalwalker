@@ -85,7 +85,7 @@ class WalkReward(Wrapper):
 
     def _compute_walk_rew(
         self, obs: np.ndarray, terminated: bool
-    ) -> tuple[SupportsFloat, dict[str, float]]:
+    ) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float]]:
         """
         Observation layout (24 elements):
             [0]       hull_ang
@@ -166,8 +166,10 @@ class WalkReward(Wrapper):
             ("termination", termination, -150.0),
         ]
 
+        raw = {name: float(r) for name, r, w in rewards_cfg}
+        weights = {name: float(w) for name, r, w in rewards_cfg}
         components = {name: float(r * w) for name, r, w in rewards_cfg}
-        return sum(components.values()), components
+        return sum(components.values()), components, raw, weights
 
     def step(
         self, action: Any
@@ -182,7 +184,7 @@ class WalkReward(Wrapper):
         # detect truncation
         self._step_count += 1
         trunc = trunc or self._step_count >= self._max_steps
-        rew, info["reward_terms"] = self._compute_walk_rew(obs, term)
+        rew, info["reward_terms"], info["reward_raw"], info["reward_weights"] = self._compute_walk_rew(obs, term)
 
         # update jerk tracking state
         post_vel_x = env.hull.linearVelocity.x

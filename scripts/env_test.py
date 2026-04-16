@@ -6,14 +6,16 @@ from pynput.keyboard import Key, KeyCode
 import os
 
 from wrappers.plot_env import Plotter
+from wrappers.plot_reward_env import RewardPlotter
 from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
-from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
-from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
-from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackReward
+from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 SEED = 42
-DRAW_PLOTS = False
+# None     → no plots
+# "obs"    → proprioceptive observation dashboard (Plotter)
+# "reward" → per-term reward breakdown dashboard (RewardPlotter)
+PLOT_MODE: str | None = None
 
 _sim_paused = False
 _sim_step = False
@@ -32,15 +34,19 @@ def main():
         "BipedalWalker-v3", render_mode="rgb_array"
     )  # no autodisplay, we'll use our own wrapper render
     
-    wrap_env = ProprioWalkReward(
-        env,
-        ep_time=15,
-        vel_switching_freq=3,
-        vel_sample_range=(0, 5),
-        vel_sample_zero=0.05,
+    wrap_env = ProprioObsWrapper(    
+        WalkReward(
+            env,
+            ep_time=15,
+            vel_switching_freq=3,
+            vel_sample_range=(0, 5),
+            vel_sample_zero=0.05,
+        )
     )
-    if DRAW_PLOTS:
+    if PLOT_MODE == "obs":
         wrap_env = Plotter(wrap_env)
+    elif PLOT_MODE == "reward":
+        wrap_env = RewardPlotter(wrap_env)
 
     obs = wrap_env.observation_space
     act = wrap_env.action_space

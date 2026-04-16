@@ -28,9 +28,8 @@ from wrappers.bipedal_walker.standing_env import StandReward
 from wrappers.bipedal_walker.sitting_env import SitReward
 from wrappers.bipedal_walker.hopping_env import HopReward
 from wrappers.bipedal_walker.walking_env import WalkReward
-from wrappers.bipedal_walker.hopping_env_proprio import ProprioHopReward
-from wrappers.bipedal_walker.walking_env_proprio import ProprioWalkReward
-from wrappers.bipedal_walker.walking_backwards_proprio import ProprioWalkBackReward
+from wrappers.bipedal_walker.walking_backwards_env import WalkBackReward
+from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
@@ -54,13 +53,15 @@ def main():
     def make_env():
         env = gym.make("BipedalWalker-v3")
         env = Monitor(
-            ProprioWalkBackReward(
-                env,
-                ep_time=10,
-                vel_sample_range=(-5, 0),
-                vel_sample_zero=0.1,
-                vel_switching_freq=5,
-                vel_interp_speed=0.3,
+            ProprioObsWrapper(
+                WalkBackReward(
+                    env,
+                    ep_time=10,
+                    vel_sample_range=(-5, 0),
+                    vel_sample_zero=0.1,
+                    vel_switching_freq=5,
+                    vel_interp_speed=0.3,
+                )
             )
         )
         return env

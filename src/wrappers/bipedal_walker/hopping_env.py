@@ -74,7 +74,7 @@ class HopReward(Wrapper):
 
     def _compute_hop_rew(
         self, obs: np.ndarray, terminated: bool
-    ) -> tuple[SupportsFloat, dict[str, float]]:
+    ) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float]]:
         """
         Observation layout (24 elements):
             [0]       hull_ang
@@ -219,8 +219,10 @@ class HopReward(Wrapper):
         #     print(f"{i[0]}: {i[1] * i[2]}")
         # print()
 
+        raw = {name: float(r) for name, r, w in rewards_cfg}
+        weights = {name: float(w) for name, r, w in rewards_cfg}
         components = {name: float(r * w) for name, r, w in rewards_cfg}
-        return sum(components.values()), components
+        return sum(components.values()), components, raw, weights
 
     def step(
         self, action: Any
@@ -231,7 +233,7 @@ class HopReward(Wrapper):
         # detect truncation
         self._step_count += 1
         trunc = trunc or self._step_count >= self._max_steps
-        rew, info["reward_terms"] = self._compute_hop_rew(obs, term)
+        rew, info["reward_terms"], info["reward_raw"], info["reward_weights"] = self._compute_hop_rew(obs, term)
 
         # change command velocity if specified
         if (
