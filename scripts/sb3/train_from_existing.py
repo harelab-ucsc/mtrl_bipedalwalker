@@ -24,9 +24,10 @@ from pynput import keyboard as kb
 
 from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
-from wrappers.bipedal_walker.standing_env import StandReward
-from wrappers.bipedal_walker.hopping_env import HopReward
-from wrappers.bipedal_walker.walking_env import WalkReward
+from wrappers.bipedal_walker.hop_env import HopEnv
+from wrappers.bipedal_walker.hop_finetune_env import HopFTEnv
+from wrappers.bipedal_walker.walk_env import WalkEnv
+from wrappers.bipedal_walker.walk_finetune_env import WalkFTEnv
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 if not os.path.exists(MODELS_DIR):
@@ -39,10 +40,13 @@ if not os.path.exists(LOGS_DIR):
 
 # PRIOR_EXP_NAME = "walk_backward/walk_backward_5_7-21_50_59-2026_04_13"
 # PRIOR_EXP_NAME = "walk_backward/hopped_walk_backward_7_1"
-PRIOR_EXP_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
+# PRIOR_EXP_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
+# PRIOR_EXP_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
+# PRIOR_EXP_NAME = "walk_forward/walk_forward_9-00_50_10-2026_04_12"
+PRIOR_EXP_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
 PRIOR_MODEL = "best/best_model"
 
-EXPERIMENT_NAME = "hop_backward/hop_backward_3_2" + datetime.today().strftime(
+EXPERIMENT_NAME = "walk_forward/walk_forward_11_1" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
 TIMESTEPS = 400 * 1024 * 14
@@ -57,11 +61,11 @@ def main():
         env = gym.make("BipedalWalker-v3")
         env = Monitor(
             ProprioObsWrapper(
-                HopReward(
+                WalkFTEnv(
                     env,
                     ep_time=10,
-                    vel_sample_range=(-5, 0),
-                    vel_sample_zero=0.1,
+                    vel_sample_range=(0, 5),
+                    vel_sample_zero=0.2,
                     vel_switching_freq=5,
                     vel_interp_speed=0.3,
                 )
@@ -86,7 +90,7 @@ def main():
         },
     )
     model.set_env(train_env)
-    
+
     # configure logger
     model.set_logger(configure(str(LOGS_DIR / EXPERIMENT_NAME), ["tensorboard"]))
     train_env.reset()

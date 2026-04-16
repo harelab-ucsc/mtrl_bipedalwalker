@@ -9,10 +9,10 @@ from pynput.keyboard import Key, KeyCode
 from utils.paths import MODELS_DIR
 from wrappers.plot_env import Plotter
 from wrappers.plot_reward_env import RewardPlotter
-from wrappers.bipedal_walker.hopping_env import HopReward
-from wrappers.bipedal_walker.walking_env import WalkReward
-from wrappers.bipedal_walker.walking_backwards_env import WalkBackReward
-from wrappers.bipedal_walker.standing_env import StandReward
+from wrappers.bipedal_walker.hop_env import HopEnv
+from wrappers.bipedal_walker.hop_finetune_env import HopFTEnv
+from wrappers.bipedal_walker.walk_env import WalkEnv
+from wrappers.bipedal_walker.walk_finetune_env import WalkFTEnv
 from wrappers.bipedal_walker.sitting_env import SitReward
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
@@ -20,10 +20,17 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 # =========================================
 
 # EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
+
+# EXPERIMENT_NAME = "hop_forward/hop_forward_7-15_49_36-2026_04_09"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
+# EXPERIMENT_NAME = "hop_forward/hop_forward_8_1-01_50_21-2026_04_16"
 
 # EXPERIMENT_NAME = "hop_backward/hop_backward_3_1-15_46_08-2026_04_15"
-EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
+# EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
+
+# EXPERIMENT_NAME = "walk_forward/walk_forward_9-00_50_10-2026_04_12"
+EXPERIMENT_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
+# EXPERIMENT_NAME = "walk_forward/walk_forward_11-02_05_14-2026_04_16"
 
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
@@ -36,7 +43,7 @@ MODEL_CHECKPOINT = "best/best_model"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)
-PLOT_MODE: str | None = "reward"
+PLOT_MODE: str | None = None
 
 # =========================================
 
@@ -58,13 +65,12 @@ def main():
     print("Loading environments...")
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
-    # wrap_env = StandReward(env, disturbance_freq=3, disturbance_force=((-3, 5), (0, 1)))
     wrap_env = ProprioObsWrapper(
-        HopReward(
+        WalkEnv(
             env,
             ep_time=15,
             vel_switching_freq=3,
-            vel_sample_range=(-5, 0),
+            vel_sample_range=(0, 5),
             vel_sample_zero=0.15,
             vel_interp_speed=0.5,
         )

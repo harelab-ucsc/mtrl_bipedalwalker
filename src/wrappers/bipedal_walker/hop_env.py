@@ -10,7 +10,7 @@ import math
 from gymnasium import spaces
 
 
-class WalkReward(Wrapper):
+class HopEnv(Wrapper):
     def __init__(
         self,
         env: Env[ObsType, ActType],
@@ -20,29 +20,24 @@ class WalkReward(Wrapper):
         vel_interp_speed: float = 1,
         vel_sample_range: tuple[float, float] = (-2.5, 2.5),
         vel_sample_zero: float = 0.2,
+        hull_x_range: tuple[float, float] = (0.0, 40.0),
     ):
         """
-        Wrapper that replaces BipedalWalker's default reward with a walking reward.
+        Wrapper that replaces BipedalWalker's default reward with a hopping reward.
 
-        Rewards velocity tracking (coarse + fine), upright posture, airtime, and
-        body height. Appends a command velocity to the observation. On reset,
-        randomizes hull position, angle, and joint configuration for domain
-        randomization.
+        Foundational training landscape: single-leg contact reward + hop bonus.
+        For fine-tuning (with leg alternation penalty and hopping bonus), use HopFTEnv instead.
 
         Args:
         env: The BipedalWalker environment to wrap.
-
         ep_time: Maximum episode duration in seconds. Default: 10.
-
         man_vel_ctrl: Manual velocity control. Keep False for training. Default: False.
-
-        vel_switching_freq: Frequency in seconds in which velocity command is switched. This only has an effect when man_vel_ctrl is False. Default: 10.
-
-        vel_interp_speed: Amount of time in seconds to interpolate between two velocity commands. Default: 1.
-
-        vel_sample_range: The range from which to sample command velocity. This only has an effect when man_vel_ctrl is False. Default: (-2.5, 2.5).
-
-        vel_sample_zero: Probability of sampling a 0 velocity command. This only has an effect when man_vel_ctrl is False. Default: 0.2.
+        vel_switching_freq: Frequency in seconds in which velocity command is switched. Default: 10.
+        vel_interp_speed: Amount of time it takes to interpolate between two speeds. Default: 1.
+        vel_sample_range: The range from which to sample command velocity. Default: (-2.5, 2.5).
+        vel_sample_zero: Probability of sampling a 0 velocity command. Default: 0.2.
+        hull_x_range: X spawn range for domain randomization. Use (0.0, 40.0) for
+            forward tasks and (40.0, 80.0) for backward tasks. Default: (0.0, 40.0).
         """
         super().__init__(env)
 
@@ -56,6 +51,7 @@ class WalkReward(Wrapper):
         self._vel_switch_steps: int = np.floor(vel_switching_freq * FPS)
         self._vel_sample_range: tuple[float, float] = vel_sample_range
         self._vel_sample_zero: float = vel_sample_zero
+        self._hull_x_range: tuple[float, float] = hull_x_range
 
         # initialize velocity commands
         self._cmd_vel: float = 0
@@ -64,7 +60,6 @@ class WalkReward(Wrapper):
         self._max_vel_buf_size: int = np.floor(
             vel_interp_speed * FPS
         )  # smooth out transitions
-        # TODO: implement a cmd_vel smoothing buffer if necessary (to smoothly switch btwn one command vel to another)
 
         base = self.env.observation_space
         self.observation_space = spaces.Box(
@@ -72,18 +67,8 @@ class WalkReward(Wrapper):
             high=np.append(base.high, np.inf),  # type: ignore
             dtype=np.float64,
         )
-        
-        # used to calculate total air time
-        self._leg_1_airtime = 0
-        self._leg_2_airtime = 0
 
-        # previous hull velocities and accelerations for jerk calculation
-        self._prev_vel_x: float = 0.0
-        self._prev_vel_y: float = 0.0
-        self._prev_accel_x: float = 0.0
-        self._prev_accel_y: float = 0.0
-
-    def _compute_walk_rew(
+    def _compute_hop_rew(
         self, obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float]]:
         """
@@ -107,12 +92,9 @@ class WalkReward(Wrapper):
 
         env: Any = self.unwrapped
         hull_vel_x = env.hull.linearVelocity.x
-        hull_vel_y = env.hull.linearVelocity.y
         hull_ang_vel = env.hull.angularVelocity
         hull_ang = env.hull.angle
         hull_x = env.hull.position.x
-
-        # print(env.hull)
 
         # velocity tracking error
         vel_err = self._cmd_vel - hull_vel_x
@@ -121,78 +103,69 @@ class WalkReward(Wrapper):
         vel_tracking_fine = 1 - np.tanh(40 * vel_tracking)
         # hull angle velocity
         hull_ang_vel = abs(hull_ang_vel) ** 2
+        # reward strict single-leg contact: +1 if only leg 1 is down, -1 otherwise
+        leg_1_contact = 1 if obs[8] == 1 and obs[13] == 0 else -1
+        # penalize any leg 2 contact
+        leg_2_contact = 1 if obs[13] == 1 else 0
         # hull angle deviation from 0
         hull_ang_l2 = hull_ang**2
         # termination
         termination = 1 if terminated else 0
         # minimize L2 joint_velocity
-        joint_vel_l2 = np.mean([obs[5]**2, obs[7]**2, obs[10]**2, obs[12]**2])
-
-        accel_x = hull_vel_x - self._prev_vel_x
-        accel_y = hull_vel_y - self._prev_vel_y
-        vel_jerk = (accel_x - self._prev_accel_x) ** 2 + (accel_y - self._prev_accel_y) ** 2
+        joint_vel_l2 = (np.mean([obs[5], obs[7], obs[10], obs[12]])) ** 2
 
         # height above ground (interpolated terrain surface)
         ground_y = float(np.interp(hull_x, env.terrain_x, env.terrain_y))
         height_above_ground = env.hull.position.y - ground_y
 
-        # penalize being close the ground
-        TARGET_HEIGHT = 2 * (34 / 30.0) + 0.1  # 2 * LEG_H in world units
-        height_err = TARGET_HEIGHT - height_above_ground
-        body_height = max(height_err * abs(height_err), 0)  # signed squared error
-        
-        # print("vel_err:", vel_err)
-        # print("vel_tracking:", vel_tracking)
-        # print("vel_tracking_fine:", vel_tracking_fine)
-        # print("jerk:", vel_jerk)
-        # print()
+        # penalize being close to the ground
+        TARGET_HEIGHT = 2 * (34 / 30.0)  # 2 * LEG_H in world units
+        body_height = TARGET_HEIGHT - height_above_ground
+        # hop bonus: height above ground scaled by velocity tracking accuracy
+        hop_bonus = height_above_ground * (1 - np.tanh(5 * abs(vel_err)))
+        if obs[8] == 1 or obs[13] == 1 or body_height < -0.15:
+            # either foot touching or height is too low → not airborne
+            hop_bonus = 0
 
         rewards_cfg: list[tuple[str, Any, float]] = [
             # coarse velocity tracking penalty
-            ("vel_tracking", vel_tracking, -0.3),
+            ("vel_tracking", vel_tracking, -0.2),
             # fine velocity tracking reward
-            ("vel_tracking_fine", vel_tracking_fine, 1.0),
+            ("vel_tracking_fine", vel_tracking_fine, 0.3),
             # penalize rotational velocity
             ("hull_ang_vel", hull_ang_vel, -0.1),
+            # reward strict single-leg contact (encourages hopping on one leg)
+            ("leg_1_contact", leg_1_contact, 0.15),
+            # penalize any leg 2 contact
+            ("leg_2_contact", leg_2_contact, -1.1),
+            # reward for being airborne with good velocity tracking
+            ("hop_bonus", hop_bonus, 0.2),
             # penalize deviation from upright
             ("hull_ang_l2", hull_ang_l2, -1.0),
             # penalize joint velocity
-            ("joint_vel_l2", joint_vel_l2, -0.1),
+            ("joint_vel_l2", joint_vel_l2, -0.02),
             # body height reward. Once it reaches above the target, it becomes a reward. Otherwise it's a penalty.
             ("body_height", body_height, -0.4),
-            # minimize velocity jerk
-            ("vel_jerk", vel_jerk, -0.2),
             # penalize dying
             ("termination", termination, -150.0),
         ]
 
-        raw = {name: float(r) for name, r, w in rewards_cfg}
-        weights = {name: float(w) for name, r, w in rewards_cfg}
+        raw = {name: float(r) for name, r, _ in rewards_cfg}
+        weights = {name: float(w) for name, _, w in rewards_cfg}
         components = {name: float(r * w) for name, r, w in rewards_cfg}
+        
         return sum(components.values()), components, raw, weights
 
     def step(
         self, action: Any
     ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
-        env: Any = self.unwrapped
-        pre_vel_x = env.hull.linearVelocity.x
-        pre_vel_y = env.hull.linearVelocity.y
-
         # step environment
         obs, rew, term, trunc, info = super().step(action)
 
         # detect truncation
         self._step_count += 1
         trunc = trunc or self._step_count >= self._max_steps
-        rew, info["reward_terms"], info["reward_raw"], info["reward_weights"] = self._compute_walk_rew(obs, term)
-
-        # update jerk tracking state
-        post_vel_x = env.hull.linearVelocity.x
-        post_vel_y = env.hull.linearVelocity.y
-        self._prev_accel_x = post_vel_x - pre_vel_x
-        self._prev_accel_y = post_vel_y - pre_vel_y
-        self._prev_vel_x = post_vel_x
-        self._prev_vel_y = post_vel_y
+        rew, info["reward_terms"], info["reward_raw"], info["reward_weights"] = self._compute_hop_rew(obs, term)
 
         # change command velocity if specified
         if (
@@ -283,10 +256,6 @@ class WalkReward(Wrapper):
 
     def reset(self, *, seed=None, options=None) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0
-        self._prev_vel_x = 0.0
-        self._prev_vel_y = 0.0
-        self._prev_accel_x = 0.0
-        self._prev_accel_y = 0.0
         obs, info = super().reset(seed=seed, options=options)
 
         # change command velocity
@@ -316,13 +285,12 @@ class WalkReward(Wrapper):
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         # hull sampling
         HULL_Y_SAMPLE_LIM = (0.2, 0.3)
-        HULL_X_SAMPLE_LIM = (0.0, 40.0)
         HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_X_SAMPLE_LIM = (-0.2, 0.2)
         HULL_VEL_Y_SAMPLE_LIM = (0, 0)
 
         hull.position += b2Vec2(
-            np.random.uniform(*HULL_X_SAMPLE_LIM), np.random.uniform(*HULL_Y_SAMPLE_LIM)
+            np.random.uniform(*self._hull_x_range), np.random.uniform(*HULL_Y_SAMPLE_LIM)
         )
 
         hull_x = env.hull.position.x

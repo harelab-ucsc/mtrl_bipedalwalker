@@ -24,11 +24,11 @@ from pynput import keyboard as kb
 
 from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
-from wrappers.bipedal_walker.standing_env import StandReward
 from wrappers.bipedal_walker.sitting_env import SitReward
-from wrappers.bipedal_walker.hopping_env import HopReward
-from wrappers.bipedal_walker.walking_env import WalkReward
-from wrappers.bipedal_walker.walking_backwards_env import WalkBackReward
+from wrappers.bipedal_walker.hop_env import HopEnv
+from wrappers.bipedal_walker.hop_finetune_env import HopFTEnv
+from wrappers.bipedal_walker.walk_env import WalkEnv
+from wrappers.bipedal_walker.walk_finetune_env import WalkFTEnv
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 if not os.path.exists(MODELS_DIR):
@@ -54,13 +54,14 @@ def main():
         env = gym.make("BipedalWalker-v3")
         env = Monitor(
             ProprioObsWrapper(
-                WalkBackReward(
+                WalkFTEnv(
                     env,
                     ep_time=10,
                     vel_sample_range=(-5, 0),
                     vel_sample_zero=0.1,
                     vel_switching_freq=5,
                     vel_interp_speed=0.3,
+                    hull_x_range=(40.0, 80.0),
                 )
             )
         )

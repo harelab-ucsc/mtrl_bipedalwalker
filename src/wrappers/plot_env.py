@@ -18,7 +18,7 @@ def _screen_size() -> tuple[int, int]:
         try:
             import ctypes, ctypes.util
 
-            cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
+            cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))  # type: ignore
 
             class _CGPoint(ctypes.Structure):
                 _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]

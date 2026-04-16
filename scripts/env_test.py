@@ -7,8 +7,8 @@ import os
 
 from wrappers.plot_env import Plotter
 from wrappers.plot_reward_env import RewardPlotter
-from wrappers.bipedal_walker.hopping_env import HopReward
-from wrappers.bipedal_walker.walking_env import WalkReward
+from wrappers.bipedal_walker.hop_env import HopEnv
+from wrappers.bipedal_walker.walk_env import WalkEnv
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 SEED = 42
@@ -34,8 +34,8 @@ def main():
         "BipedalWalker-v3", render_mode="rgb_array"
     )  # no autodisplay, we'll use our own wrapper render
     
-    wrap_env = ProprioObsWrapper(    
-        WalkReward(
+    wrap_env = ProprioObsWrapper(
+        WalkEnv(
             env,
             ep_time=15,
             vel_switching_freq=3,
