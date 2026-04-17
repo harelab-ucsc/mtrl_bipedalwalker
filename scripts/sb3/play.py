@@ -23,13 +23,16 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-15_49_36-2026_04_09"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
+# EXPERIMENT_NAME = "hop_forward/hop_forward_8-01_47_33-2026_04_16"
 # EXPERIMENT_NAME = "hop_forward/hop_forward_8_1-01_50_21-2026_04_16"
 
-# EXPERIMENT_NAME = "hop_backward/hop_backward_3_1-15_46_08-2026_04_15"
 # EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
+EXPERIMENT_NAME = "hop_backward/hop_backward_3_2-15_46_14-2026_04_15"
 
 # EXPERIMENT_NAME = "walk_forward/walk_forward_9-00_50_10-2026_04_12"
-EXPERIMENT_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
+# EXPERIMENT_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
+# EXPERIMENT_NAME = "walk_forward/walk_forward_11-02_05_14-2026_04_16"
+# EXPERIMENT_NAME = "walk_forward/walk_forward_11_1-03_09_34-2026_04_16"
 # EXPERIMENT_NAME = "walk_forward/walk_forward_11-02_05_14-2026_04_16"
 
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
@@ -70,8 +73,9 @@ def main():
             env,
             ep_time=15,
             vel_switching_freq=3,
-            vel_sample_range=(0, 5),
-            vel_sample_zero=0.15,
+            vel_sample_range=(-5, 0),
+            hull_x_range=(40, 80),
+            vel_sample_zero=0.5,
             vel_interp_speed=0.5,
         )
     )
