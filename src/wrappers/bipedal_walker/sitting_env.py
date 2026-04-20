@@ -293,8 +293,8 @@ class SitReward(Wrapper):
             KNEE_SAMPLE_LIM = (-0.6, -0.1)
             HULL_Y_SAMPLE_LIM = (0.2, 0.4)
             HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
-            HULL_VEL_X_SAMPLE_LIM = (-0.8, 0.8)
-            HULL_VEL_Y_SAMPLE_LIM = (-0.2, 0.2)
+            HULL_VEL_X_SAMPLE_LIM = (-3, 3)
+            HULL_VEL_Y_SAMPLE_LIM = (-0.6, 0.6)
 
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         HULL_X_SAMPLE_LIM = (3.0, 8.0)
