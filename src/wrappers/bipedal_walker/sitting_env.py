@@ -257,44 +257,12 @@ class SitReward(Wrapper):
         LEG_DOWN = -8 / SCALE
         LEG_H = 34 / SCALE
 
-        # Sample from multiple starting modes so the policy learns to reach
-        # the sit target from a variety of reasonable standing starts.
-        #
-        # All three modes start with feet near the ground (no dangling legs)
-        # and within recoverable disturbance bounds. Per-mode eval showed
-        # aggressive "tipped" starts (±0.7 rad, ±3 m/s) and bogus "folded
-        # knees at standing height" starts both give unrecoverable initial
-        # conditions that inflate death rate. Everything here is survivable.
-        #
-        # Joint limits from BipedalWalker:
-        #   hip:  (-0.8, 1.1)
-        #   knee: (-1.6, -0.1)
-        MODE = np.random.choice([0, 1, 2])
-
-        if MODE == 0:
-            # clean upright standing, near-rest joints
-            HIP_SAMPLE_LIM = (-0.1, 0.1)
-            KNEE_SAMPLE_LIM = (-0.2, -0.1)
-            HULL_Y_SAMPLE_LIM = (0.2, 0.4)
-            HULL_ROT_SAMPLE_LIM = (-0.08, 0.08)
-            HULL_VEL_X_SAMPLE_LIM = (-0.15, 0.15)
-            HULL_VEL_Y_SAMPLE_LIM = (-0.05, 0.05)
-        elif MODE == 1:
-            # standing with wider joint variation, still fully upright
-            HIP_SAMPLE_LIM = (-0.3, 0.3)
-            KNEE_SAMPLE_LIM = (-0.5, -0.1)
-            HULL_Y_SAMPLE_LIM = (0.2, 0.4)
-            HULL_ROT_SAMPLE_LIM = (-0.15, 0.15)
-            HULL_VEL_X_SAMPLE_LIM = (-0.5, 0.5)
-            HULL_VEL_Y_SAMPLE_LIM = (-0.15, 0.15)
-        else:
-            # standing with mild tilt + velocity (strictly recoverable)
-            HIP_SAMPLE_LIM = (-0.4, 0.4)
-            KNEE_SAMPLE_LIM = (-0.6, -0.1)
-            HULL_Y_SAMPLE_LIM = (0.2, 0.4)
-            HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
-            HULL_VEL_X_SAMPLE_LIM = (-3, 3)
-            HULL_VEL_Y_SAMPLE_LIM = (-0.6, 0.6)
+        HIP_SAMPLE_LIM = (-0.8, 1.1)
+        KNEE_SAMPLE_LIM = (-1.6, -0.1)
+        HULL_Y_SAMPLE_LIM = (0.35, 0.55)
+        HULL_ROT_SAMPLE_LIM = (-0.2, 0.2)
+        HULL_VEL_X_SAMPLE_LIM = (-3, 3)
+        HULL_VEL_Y_SAMPLE_LIM = (-0.6, 0.6)
 
         JOINT_VEL_SAMPLE_LIM = (-0.2, 0.2)
         HULL_X_SAMPLE_LIM = (3.0, 8.0)
