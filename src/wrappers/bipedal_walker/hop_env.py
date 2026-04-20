@@ -8,6 +8,7 @@ import numpy as np
 import math
 
 from gymnasium import spaces
+import pygame
 
 
 class HopEnv(Wrapper):
@@ -15,7 +16,6 @@ class HopEnv(Wrapper):
         self,
         env: Env[ObsType, ActType],
         ep_time: int = 10,
-        man_vel_ctrl: bool = False,
         vel_switching_freq: float = 10,
         vel_interp_speed: float = 1,
         vel_sample_range: tuple[float, float] = (-2.5, 2.5),
@@ -31,7 +31,6 @@ class HopEnv(Wrapper):
         Args:
         env: The BipedalWalker environment to wrap.
         ep_time: Maximum episode duration in seconds. Default: 10.
-        man_vel_ctrl: Manual velocity control. Keep False for training. Default: False.
         vel_switching_freq: Frequency in seconds in which velocity command is switched. Default: 10.
         vel_interp_speed: Amount of time it takes to interpolate between two speeds. Default: 1.
         vel_sample_range: The range from which to sample command velocity. Default: (-2.5, 2.5).
@@ -47,7 +46,6 @@ class HopEnv(Wrapper):
         self._max_steps: int = ep_time * FPS
         self._step_count: int = 0
 
-        self._man_vel_ctrl: bool = man_vel_ctrl
         self._vel_switch_steps: int = np.floor(vel_switching_freq * FPS)
         self._vel_sample_range: tuple[float, float] = vel_sample_range
         self._vel_sample_zero: float = vel_sample_zero
@@ -194,65 +192,63 @@ class HopEnv(Wrapper):
     def render(self):
         result = super().render()  # gets rgb_array frame with base rendering done
 
-        import pygame
-
         env: Any = self.unwrapped
         if not hasattr(env, "surf") or env.surf is None:
             return result
 
-        self._draw_velocity_arrows(pygame, env)
+        self._draw_velocity_arrows(env)
 
         # re-grab the frame after drawing on surf
         return np.transpose(
             np.array(pygame.surfarray.pixels3d(env.surf)), axes=(1, 0, 2)
         )[:, -600:]
 
-    def _draw_velocity_arrows(self, pygame, env):
+    def _draw_velocity_arrows(self, env):
         unwrapped: Any = self.unwrapped
         real_vel_x: float = unwrapped.hull.linearVelocity.x
+        
+        def _draw_arrow(
+            env, vel_x: float, color: tuple, y_offset: int = 0
+        ):
+            SCALE = 30.0
+            VIEWPORT_H = 400
+            ARROW_SCALE = 2
+
+            HEAD_LEN = 10
+            HEAD_WIDTH = 5
+
+            hull_x, hull_y = env.hull.position
+            sx = hull_x * SCALE
+            sy = VIEWPORT_H - hull_y * SCALE - 40 + y_offset
+
+            if abs(vel_x) < 1e-6:
+                return
+
+            sign = math.copysign(1.0, vel_x)  # direction
+            mag = abs(vel_x) * ARROW_SCALE * 10  # pixel length of shaft
+
+            ex = sx + sign * mag
+            ey = sy
+
+            # shorten shaft so it ends at base of head, not tip
+            shaft_ex = ex - sign * HEAD_LEN
+            pygame.draw.line(
+                env.surf, color, (int(sx), int(sy)), (int(shaft_ex), int(ey)), 2
+            )
+
+            # constant-size arrowhead: tip at (ex, ey), base perpendicular in screen y
+            p1 = (int(ex), int(ey))
+            p2 = (int(ex - sign * HEAD_LEN), int(ey - HEAD_WIDTH))
+            p3 = (int(ex - sign * HEAD_LEN), int(ey + HEAD_WIDTH))
+
+            pygame.draw.polygon(env.surf, color, [p1, p2, p3])
 
         # green = command
-        self._draw_velocity_arrow(
-            pygame, env, self._cmd_vel, color=(9, 176, 12), y_offset=-10
+        _draw_arrow(
+            env, self._cmd_vel, color=(9, 176, 12), y_offset=-10
         )
         # blue = real
-        self._draw_velocity_arrow(pygame, env, real_vel_x, color=(71, 126, 255))
-
-    def _draw_velocity_arrow(
-        self, pygame, env, vel_x: float, color: tuple, y_offset: int = 0
-    ):
-        SCALE = 30.0
-        VIEWPORT_H = 400
-        ARROW_SCALE = 2
-
-        HEAD_LEN = 10
-        HEAD_WIDTH = 5
-
-        hull_x, hull_y = env.hull.position
-        sx = hull_x * SCALE
-        sy = VIEWPORT_H - hull_y * SCALE - 40 + y_offset
-
-        if abs(vel_x) < 1e-6:
-            return
-
-        sign = math.copysign(1.0, vel_x)  # direction
-        mag = abs(vel_x) * ARROW_SCALE * 10  # pixel length of shaft
-
-        ex = sx + sign * mag
-        ey = sy
-
-        # shorten shaft so it ends at base of head, not tip
-        shaft_ex = ex - sign * HEAD_LEN
-        pygame.draw.line(
-            env.surf, color, (int(sx), int(sy)), (int(shaft_ex), int(ey)), 2
-        )
-
-        # constant-size arrowhead: tip at (ex, ey), base perpendicular in screen y
-        p1 = (int(ex), int(ey))
-        p2 = (int(ex - sign * HEAD_LEN), int(ey - HEAD_WIDTH))
-        p3 = (int(ex - sign * HEAD_LEN), int(ey + HEAD_WIDTH))
-
-        pygame.draw.polygon(env.surf, color, [p1, p2, p3])
+        _draw_arrow(env, real_vel_x, color=(71, 126, 255))
 
     def reset(self, *, seed=None, options=None) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0
