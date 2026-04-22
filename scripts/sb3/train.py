@@ -24,7 +24,7 @@ from pynput import keyboard as kb
 
 from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
-from wrappers.bipedal_walker.sitting_env import SitReward
+from wrappers.bipedal_walker.sit_env import SitEnv
 from wrappers.bipedal_walker.hop_env import HopEnv
 from wrappers.bipedal_walker.hop_finetune_env import HopFTEnv
 from wrappers.bipedal_walker.walk_env import WalkEnv
@@ -34,8 +34,8 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
 
-if not os.path.exists(LOGS_DIR):
-    os.makedirs(LOGS_DIR)
+if not os.path.exists(LOGS_DIR / "expert"):
+    os.makedirs(LOGS_DIR / "expert")
 
 # =========================================
 
@@ -86,7 +86,7 @@ def main():
         policy_kwargs=policy_kwargs,
         device=torch.device("cpu"),
     )
-    model.set_logger(configure(str(LOGS_DIR / EXPERIMENT_NAME), ["tensorboard"]))
+    model.set_logger(configure(str(LOGS_DIR / "expert" / EXPERIMENT_NAME), ["tensorboard"]))
     train_env.reset()
 
     # define callbacks

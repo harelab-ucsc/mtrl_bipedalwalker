@@ -13,7 +13,7 @@ from wrappers.bipedal_walker.hop_env import HopEnv
 from wrappers.bipedal_walker.hop_finetune_env import HopFTEnv
 from wrappers.bipedal_walker.walk_env import WalkEnv
 from wrappers.bipedal_walker.walk_finetune_env import WalkFTEnv
-from wrappers.bipedal_walker.sitting_env import SitReward
+from wrappers.bipedal_walker.sit_env import SitEnv
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 
@@ -27,14 +27,15 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 # EXPERIMENT_NAME = "hop_forward/hop_forward_8_1-01_50_21-2026_04_16"
 
 # EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
-EXPERIMENT_NAME = "hop_backward/hop_backward_3_2-15_46_14-2026_04_15"
+# EXPERIMENT_NAME = "hop_backward/hop_backward_3_2-15_46_14-2026_04_15"
 
 # EXPERIMENT_NAME = "walk_forward/walk_forward_9-00_50_10-2026_04_12"
 # EXPERIMENT_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
 # EXPERIMENT_NAME = "walk_forward/walk_forward_11-02_05_14-2026_04_16"
 # EXPERIMENT_NAME = "walk_forward/walk_forward_11_1-03_09_34-2026_04_16"
-# EXPERIMENT_NAME = "walk_forward/walk_forward_11-02_05_14-2026_04_16"
+EXPERIMENT_NAME = "walk_forward/walk_forward_11-02_05_14-2026_04_16"
 
+# EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_2-00_06_27-2026_04_15"

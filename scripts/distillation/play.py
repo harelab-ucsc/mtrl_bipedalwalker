@@ -98,7 +98,7 @@ def main():
         # append command to model input
         obs = np.append(obs, cmd_x_vel)
         
-        action, _states = model.predict(obs, deterministic=True)
+        action, _ = model.predict(obs, deterministic=True)
         obs, _, term, trunc, info = env.step(action)
         cmd_x_vel = info["cmd"]["x_vel"]  # update command
 

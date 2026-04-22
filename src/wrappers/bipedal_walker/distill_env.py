@@ -70,7 +70,7 @@ class DistillEnv(ProprioObsWrapper):
         self._cmd_vel_target: float = 0.0
         self._cmd_vel_buf: list[float] = [0.0]  # smooth out transitions
 
-        # tasks
+        # tasks (purely cosmetic)
         self._tasks = tasks
         self._cur_task_id = 0
 
@@ -80,7 +80,7 @@ class DistillEnv(ProprioObsWrapper):
     def config_hull_reset(
         self,
         x_range: tuple[float, float] = (0.0, 40.0),
-        y_range: tuple[float, float] = (0.0, 0.0),
+        y_range: tuple[float, float] = (0.0, 0.3),
         rot_range: tuple[float, float] = (-0.2, 0.2),
         vel_x_range: tuple[float, float] = (-0.2, 0.2),
         vel_y_range: tuple[float, float] = (0.0, 0.0),
@@ -131,7 +131,7 @@ class DistillEnv(ProprioObsWrapper):
         sample_range: tuple[float, float] = (-2.5, 2.5),
         switch_time: float = 5.0,
         interp_time: float = 1.0,
-        zero_prob: float = 0.2,
+        zero_prob: float = 0.15,
     ):
         """Configure command velocity sampling and switching behaviour.
 

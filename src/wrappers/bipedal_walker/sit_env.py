@@ -10,7 +10,7 @@ import math
 from mdp.bipedal_walker.rewards import body_lin_vel_l2, leg_contact
 
 
-class SitReward(Wrapper):
+class SitEnv(Wrapper):
     """
     Wrapper that replaces BipedalWalker's default reward with a sitting reward.
 
