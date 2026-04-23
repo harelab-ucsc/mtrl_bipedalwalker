@@ -1,21 +1,26 @@
 # https://arxiv.org/pdf/2505.11164
 
-import os
 import warnings
+import time
+import subprocess
+import threading
+from datetime import datetime
 
-from gymnasium import Space, make
-from gymnasium.spaces import Box
+from gymnasium import make
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from torch import nn
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.tensorboard import SummaryWriter
 
+import pygame
+from pynput import keyboard as kb
 from tqdm import tqdm
 from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
+from utils.logging import fmt_duration
 from wrappers.bipedal_walker.distill_env import DistillEnv
 
 EXPERT_MODEL_PATHS = [
@@ -25,6 +30,10 @@ EXPERT_MODEL_PATHS = [
     "experts/hop_backward",
 ]
 
+TASK_NAMES = ["walk_forward", "walk_backward", "hop_forward", "hop_backward"]
+
+RUN_NAME = "distill" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+
 _sim_paused = False
 _sim_step = False
 _sim_res = False
@@ -33,14 +42,16 @@ _sim_res = False
 def main():
     global _sim_paused, _sim_step, _sim_res
 
+    if torch.accelerator.is_available():
+        device = torch.accelerator.current_accelerator().type  # type: ignore
+    else:
+        device = "cpu"
+
     print("Loading environments...")
 
-    env = make("BipedalWalker-v3", render_mode="rgb_array")
-    env = DistillEnv(
-        env,
-        ep_time=10,
-        tasks={1: "walk forward", 2: "walk backward", 3: "hop forward", 4: "hop backward"},
-    )
+    _tasks = {1: "walk forward", 2: "walk backward", 3: "hop forward", 4: "hop backward"}
+    env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10, tasks=_tasks)
+    eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10, tasks=_tasks)
 
     # load expert models
     print("Loading experts...")
@@ -49,17 +60,10 @@ def main():
     ]
 
     BASE_OBS_SIZE = 14
-    OBS_SIZE = (
-        BASE_OBS_SIZE + 3
-    )  # one for command velocity, 2 one hot encoded for task specification.
+    OBS_SIZE = BASE_OBS_SIZE + 3  # cmd_vel + 2 one-hot task bits
     ACT_SIZE = 4
 
-    # create student model
-    if torch.accelerator.is_available():
-        device = torch.accelerator.current_accelerator().type  # type: ignore
-    else:
-        device = "cpu"
-
+    # student model
     class StudentModel(nn.Module):
         def __init__(self, obs_size: int, act_size: int):
             super().__init__()
@@ -76,111 +80,251 @@ def main():
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.policy(x)
 
-    student = StudentModel(OBS_SIZE, ACT_SIZE).to(device)
+    student = StudentModel(OBS_SIZE, ACT_SIZE)
 
-    # helper for DAgger
-    def configureEnv(
-        env: DistillEnv, task_id: int
-    ):
-        reset_x_range = None
-        cmd_vel_sample_range = None
-        cmd_vel_interp_range = None
+    # ---- helpers ----
 
+    def configureEnv(e: DistillEnv, task_id: int):
         if task_id == 0 or task_id == 2:  # walk / hop forward
-            reset_x_range = (0.0, 40.0)
-            cmd_vel_sample_range = (0.0, 5.0)
-            cmd_vel_interp_range = 0.5
-        elif task_id == 1 or task_id == 3:  # walk / hop backward
-            reset_x_range = (40.0, 80.0)
-            cmd_vel_sample_range = (-5.0, 0.0)
-            cmd_vel_interp_range = 0.5
+            x_range = (0.0, 40.0)
+            vel_range = (0.0, 5.0)
+        else:                              # walk / hop backward
+            x_range = (40.0, 80.0)
+            vel_range = (-5.0, 0.0)
+        e.set_task(task_id + 1)  # tasks dict is 1-indexed
+        e.config_hull_reset(x_range=x_range)
+        e.config_cmd_vel(sample_range=vel_range, interp_time=0.5)
 
-        # safety check
-        assert reset_x_range is not None
-        assert cmd_vel_sample_range is not None
-        assert cmd_vel_interp_range is not None
-
-        # set configuration
-        env.config_hull_reset(
-            x_range=reset_x_range
-        )
-        env.config_cmd_vel(
-            sample_range=cmd_vel_sample_range,
-            interp_time=cmd_vel_interp_range
-        )
-    
-    def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float):
-        if 0 <= task_id < 4:  # locomotion task, append cmd velocity
-            obs = np.append(obs, cmd_vel)
-        
-        action, _ = EXPERT_MODELS[task_id].predict(obs, deterministic=True)
+    def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float) -> np.ndarray:
+        action, _ = EXPERT_MODELS[task_id].predict(np.append(obs, cmd_vel), deterministic=True)
         return action
-    
-    def forwardStudent(obs: np.ndarray, task_id: int, cmd_vel: float):
-        obs = np.append(obs, cmd_vel)  # add cmd velocity
-        
-        # create one hot encoded task specification
-        task_spec = [0, 0]
-        if task_id == 0 or task_id == 1:
-            task_spec[0] = 1
-        elif task_id == 2 or task_id == 3:
-            task_spec[1] = 1
-        obs = np.append(obs, task_spec)
 
-        input = torch.from_numpy(obs.astype("float32")).to(device)
-        
-        action = student.forward(input)
-        return action.to("cpu")
+    def studentObs(obs: np.ndarray, task_id: int, cmd_vel: float) -> np.ndarray:
+        task_spec = [1, 0] if task_id < 2 else [0, 1]  # walk=10, hop=01
+        return np.concatenate([obs, [cmd_vel], task_spec])
 
-    # DAgger
-    T = 500  # T-step trajectory
-    batch = 5  # total batch size = batch * parallel env ct
-    epoch = 300  # test
+    # ---- DAgger hyperparams ----
 
-    D = []  # aggregated dataset D
+    T = 1000        # env steps per DAgger iteration
+    N = 20          # DAgger iterations
+    EPOCH = 30      # training epochs per iteration
+    BATCH_SIZE = 256
+    LR = 1e-3
+    DECAY = 1e-2
+    T_EVAL = 300    # eval steps per expert task
 
-    bar = tqdm(total=epoch * batch * T, desc="Training", ascii=" ░▒█")
-    for _ in range(epoch):
-        # 1. get dataset D_i = {(s, π*(s))} of visited state by π_i and action by expert
-        Di = []
+    loss_fn = nn.MSELoss()
+    optimizer = torch.optim.AdamW(student.parameters(), lr=LR, weight_decay=DECAY)
 
+    D: list[tuple[np.ndarray, np.ndarray, int]] = []
+
+    writer = SummaryWriter(log_dir=str(LOGS_DIR / "distill" / RUN_NAME))
+    print_run_info(student, OBS_SIZE, ACT_SIZE, device, N, T, EPOCH, BATCH_SIZE, LR, DECAY, RUN_NAME)
+
+    # ---- eval routine ----
+
+    def evaluate(n: int):
+        student.eval()
+        student.to("cpu")
+        task_losses = []
         with torch.no_grad():
-            # 1. collect trajectories
-            for _ in range(batch):
-                # init random task and setup env
-                current_task = np.random.choice(list(range(4)))
-                configureEnv(env, current_task)
-                obs, info = env.reset()
+            for task_id, task_name in enumerate(TASK_NAMES):
+                configureEnv(eval_env, task_id)
+                obs, info = eval_env.reset()
                 cmd_vel = info["cmd"]["x_vel"]
+                done = False
+                step_losses = []
 
-                for _ in range(T):
-                    # forward prop the appropriate expert & student
-                    act_expert = forwardExpert(obs, current_task, cmd_vel)
-                    act_student = forwardStudent(obs, current_task, cmd_vel)
-                    # step env
-                    obs, _, trunc, term, info = env.step(act_student)
-                    done = trunc or term
-                    # collect data
-                    Di.append((obs, act_expert))
-
-                    # if done, pick a different task and reset
+                for _ in range(T_EVAL):
                     if done:
-                        current_task = np.random.choice(list(range(4)))
-                        configureEnv(env, current_task)
-                        obs, info = env.reset()
+                        obs, info = eval_env.reset()
                         cmd_vel = info["cmd"]["x_vel"]
-                    
-                    bar.update(1)
+                        done = False
 
-            # 2. aggregate dataset
-            D += Di
+                    act_expert = forwardExpert(obs, task_id, cmd_vel)
+                    obs_s = studentObs(obs, task_id, cmd_vel)
+                    pred = student(torch.tensor(obs_s, dtype=torch.float32))
+                    target = torch.tensor(act_expert, dtype=torch.float32)
 
-            # 3. train student on D
-            obs_list, act_list = zip(*D)
-            obs_arr = np.array(obs_list)   # (N, BASE_OBS_SIZE)
-            act_arr = np.array(act_list)   # (N, ACT_SIZE)
+                    step_losses.append(F.mse_loss(pred, target).item())
+
+                    obs, _, term, trunc, info = eval_env.step(pred.numpy())
+                    cmd_vel = info["cmd"]["x_vel"]
+                    done = term or trunc
+
+                task_loss = float(np.mean(step_losses))
+                task_losses.append(task_loss)
+                writer.add_scalar(f"eval/loss_{task_name}", task_loss, n)
+
+        writer.add_scalar("eval/loss_total", float(np.mean(task_losses)), n)
+
+    # ---- main loop ----
+
+    start_time = time.time()
+    bar = tqdm(total=(N * T) + (N * EPOCH), desc="Training", ascii=" ░▒█")
+
+    for n in range(N):
+        Di: list[tuple[np.ndarray, np.ndarray, int]] = []
+
+        # 1. collect trajectories under current student policy
+        student.to("cpu")
+        student.eval()
+        with torch.no_grad():
+            done = True
+            for _ in range(T):
+                if done:
+                    current_task = int(np.random.choice(4))
+                    configureEnv(env, current_task)
+                    obs, info = env.reset()
+                    cmd_vel = info["cmd"]["x_vel"]
+
+                act_expert = forwardExpert(obs, current_task, cmd_vel)
+                obs_s = studentObs(obs, current_task, cmd_vel)
+                act_student = student(torch.tensor(obs_s, dtype=torch.float32)).numpy()
+
+                obs, _, term, trunc, info = env.step(act_student)
+                cmd_vel = info["cmd"]["x_vel"]
+                done = term or trunc
+
+                Di.append((obs_s, act_expert, current_task))
+                bar.update(1)
+
+        # 2. aggregate dataset
+        D += Di
+
+        # 3. train student on full D
+        obs_list, act_list, task_ids_all = zip(*D)  # type: ignore
+        x_full = torch.tensor(np.array(obs_list), dtype=torch.float32)
+        y_full = torch.tensor(np.array(act_list), dtype=torch.float32)
+
+        loader = DataLoader(TensorDataset(x_full, y_full), batch_size=BATCH_SIZE, shuffle=True)
+
+        student.to(device)
+        student.train()
+
+        for epoch in range(EPOCH):
+            epoch_loss = 0.0
+            for obs_batch, act_batch in loader:
+                obs_batch = obs_batch.to(device)
+                act_batch = act_batch.to(device)
+
+                pred = student(obs_batch)
+                loss = loss_fn(pred, act_batch)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
+
+            writer.add_scalar("train/loss", epoch_loss / len(loader), n * EPOCH + epoch)
+            bar.update(1)
+
+        # log per-iteration scalars
+        writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], n)
+        writer.add_scalar("train/dataset_size", len(D), n)
+
+        # per-expert training loss on full accumulated dataset
+        student.eval()
+        student.to("cpu")
+        with torch.no_grad():
+            pred_all = student(x_full)
+            for task_id, task_name in enumerate(TASK_NAMES):
+                indices = [i for i, t in enumerate(task_ids_all) if t == task_id]
+                if indices:
+                    idx_t = torch.tensor(indices)
+                    writer.add_scalar(
+                        f"train/loss_{task_name}",
+                        F.mse_loss(pred_all[idx_t], y_full[idx_t]).item(),
+                        n,
+                    )
+
+        # 4. eval
+        evaluate(n)
 
     bar.close()
+    writer.close()
+
+    duration = fmt_duration(time.time() - start_time)
+    print(f"\nDone! Total time: {duration}")
+
+    try:
+        subprocess.run(
+            [
+                "osascript", "-e",
+                f'display notification "Finished in {duration}" with title "Distillation complete" subtitle "{RUN_NAME}"',
+            ],
+            check=False,
+        )
+    except FileNotFoundError:
+        pass
+    try:
+        play_sound(ROOT / "assets" / "train_finish.mp3")
+    except Exception as e:
+        print(f"(skipping play_sound: {e})")
+
+
+def print_run_info(student, obs_size, act_size, device, N, T, EPOCH, BATCH_SIZE, LR, DECAY, run_name):
+    def section(title, lines):
+        print(f"\n  {title}")
+        print(f"  {'-' * 44}")
+        for line in lines:
+            print(f"    {line}")
+
+    print(f"\n{'=' * 44}")
+    print(f"  DAgger distillation  {run_name}")
+    print(f"{'=' * 44}")
+
+    section(
+        "algorithm",
+        [
+            f"N (dagger iters)   {N}",
+            f"T (steps / iter)   {T}",
+            f"epochs / update    {EPOCH}",
+            f"batch size         {BATCH_SIZE}",
+            f"lr                 {LR}",
+            f"weight decay       {DECAY}",
+            f"total env steps    {N * T:,}",
+        ],
+    )
+
+    section(
+        "student network",
+        [
+            f"obs size   {obs_size}",
+            f"act size   {act_size}",
+            f"device     {device}",
+        ]
+        + [f"layer      {m}" for m in student.policy if hasattr(m, "in_features")],
+    )
+
+    section(
+        "logging",
+        [f"tensorboard  logs/distill/{run_name}"],
+    )
+
+    print(f"\n{'=' * 44}\n")
+
+
+def play_sound(path):
+    pygame.mixer.init()
+    pygame.mixer.music.load(str(path))
+    pygame.mixer.music.play()
+    print("Tip: Press Esc to stop the sound.")
+
+    stop = threading.Event()
+
+    def on_press(key):
+        if key == kb.Key.esc:
+            stop.set()
+
+    listener = kb.Listener(on_press=on_press)
+    listener.start()
+    while pygame.mixer.music.get_busy() and not stop.is_set():
+        time.sleep(0.1)
+    listener.stop()
+
+    pygame.mixer.music.stop()
+    pygame.mixer.quit()
 
 
 if __name__ == "__main__":

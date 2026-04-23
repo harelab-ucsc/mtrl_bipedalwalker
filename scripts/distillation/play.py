@@ -15,6 +15,7 @@ from wrappers.bipedal_walker.distill_env import DistillEnv
 EXPERIMENT_NAME = "experts"
 # MODEL_CHECKPOINT = "walk_forward"
 MODEL_CHECKPOINT = "walk_backward"
+# MODEL_CHECKPOINT = "sit"
 
 # =========================================
 
@@ -43,7 +44,7 @@ def main():
             1: "walk back",
             2: "walk foward",
             3: "hop back",
-            4: "hop back"
+            4: "hop back",
         }
     )
     
@@ -96,7 +97,7 @@ def main():
         assert env.action_space.shape is not None
 
         # append command to model input
-        obs = np.append(obs, cmd_x_vel)
+        # obs = np.append(obs, cmd_x_vel)
         
         action, _ = model.predict(obs, deterministic=True)
         obs, _, term, trunc, info = env.step(action)
