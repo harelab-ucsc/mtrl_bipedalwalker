@@ -113,8 +113,10 @@ class SitEnv(Wrapper):
         # knee fold: reward knee joint positions close to the folded end
         # of their range. Joint range is (-1.6, -0.1); -1.2 is a deep fold.
         KNEE_FOLD_TARGET = -1.2
+        knee1_ang = float(env.joints[1].angle)
+        knee2_ang = float(env.joints[3].angle)
         knee_fold_err = (
-            (obs[6] - KNEE_FOLD_TARGET) ** 2 + (obs[11] - KNEE_FOLD_TARGET) ** 2
+            (knee1_ang - KNEE_FOLD_TARGET) ** 2 + (knee2_ang - KNEE_FOLD_TARGET) ** 2
         )
 
         # normalize some rewards
