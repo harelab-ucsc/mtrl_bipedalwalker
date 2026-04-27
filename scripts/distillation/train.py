@@ -1,5 +1,6 @@
 # https://arxiv.org/pdf/2505.11164
 
+import os
 import warnings
 import time
 import subprocess
@@ -22,7 +23,9 @@ from tqdm import tqdm
 from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import fmt_duration
 from wrappers.bipedal_walker.distill_env import DistillEnv
-
+from mdp.bipedal_walker.student import StudentModel, OBS_SIZE, ACT_SIZE
+    
+    
 EXPERT_MODEL_PATHS = [
     "experts/walk_forward",
     "experts/walk_backward",
@@ -32,7 +35,7 @@ EXPERT_MODEL_PATHS = [
 
 TASK_NAMES = ["walk_forward", "walk_backward", "hop_forward", "hop_backward"]
 
-RUN_NAME = "distill" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "distill/2_1" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 
 _sim_paused = False
 _sim_step = False
@@ -49,84 +52,74 @@ def main():
 
     print("Loading environments...")
 
-    _tasks = {1: "walk forward", 2: "walk backward", 3: "hop forward", 4: "hop backward"}
-    env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10, tasks=_tasks)
-    eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10, tasks=_tasks)
+    # 0: walk forward
+    # 1: walk backward
+    # 2: hop forward
+    # 3: hop backward
+    
+    env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10)
+    eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10)
 
-    # load expert models
+    # load  models
     print("Loading experts...")
     EXPERT_MODELS = [
         PPO.load(MODELS_DIR / i, env=None, device="cpu") for i in EXPERT_MODEL_PATHS
     ]
+    print("Loading student...")
+    student = StudentModel()
 
-    BASE_OBS_SIZE = 14
-    OBS_SIZE = BASE_OBS_SIZE + 3  # cmd_vel + 2 one-hot task bits
-    ACT_SIZE = 4
-
-    # student model
-    class StudentModel(nn.Module):
-        def __init__(self, obs_size: int, act_size: int):
-            super().__init__()
-            self.policy = nn.Sequential(
-                nn.Linear(obs_size, 256),
-                nn.ELU(),
-                nn.Linear(256, 128),
-                nn.ELU(),
-                nn.Linear(128, 64),
-                nn.ELU(),
-                nn.Linear(64, act_size),
-            )
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            return self.policy(x)
-
-    student = StudentModel(OBS_SIZE, ACT_SIZE)
-
-    # ---- helpers ----
-
+    # helpers for training and eval
     def configureEnv(e: DistillEnv, task_id: int):
+        # config the env to a certain task
         if task_id == 0 or task_id == 2:  # walk / hop forward
             x_range = (0.0, 40.0)
             vel_range = (0.0, 5.0)
-        else:                              # walk / hop backward
+        else:  # walk / hop backward
             x_range = (40.0, 80.0)
             vel_range = (-5.0, 0.0)
-        e.set_task(task_id + 1)  # tasks dict is 1-indexed
         e.config_hull_reset(x_range=x_range)
         e.config_cmd_vel(sample_range=vel_range, interp_time=0.5)
 
     def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float) -> np.ndarray:
+        # at 0 cmd velocity, default locomotion tasks to forward ones
+        if cmd_vel == 0:
+            if task_id == 1:  # walk backwards
+                task_id = 0
+            elif task_id == 3:  # hop backwards
+                task_id = 2
+                
+        # get an expert's opinion lol
         action, _ = EXPERT_MODELS[task_id].predict(np.append(obs, cmd_vel), deterministic=True)
         return action
 
-    def studentObs(obs: np.ndarray, task_id: int, cmd_vel: float) -> np.ndarray:
-        task_spec = [1, 0] if task_id < 2 else [0, 1]  # walk=10, hop=01
-        return np.concatenate([obs, [cmd_vel], task_spec])
-
-    # ---- DAgger hyperparams ----
-
-    T = 1000        # env steps per DAgger iteration
-    N = 20          # DAgger iterations
-    EPOCH = 30      # training epochs per iteration
+    # DAgger hyperparams
+    T = 1000                # env steps per iter
+    N = 20                  # num iterations to go thru
+    EPOCH = 30              # training epochs per iteration
     BATCH_SIZE = 256
     LR = 1e-3
     DECAY = 1e-2
-    T_EVAL = 300    # eval steps per expert task
+    ACT_VAR = 0           # action variance during data collection
+    T_EVAL = 500            # eval steps per expert task
+    
+    # training settings
+    CKPT_INT = 1            # how many iter before saving a checkpoint
+    BEST_INT = 1            # how many iter before saving a best
 
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.AdamW(student.parameters(), lr=LR, weight_decay=DECAY)
 
     D: list[tuple[np.ndarray, np.ndarray, int]] = []
 
-    writer = SummaryWriter(log_dir=str(LOGS_DIR / "distill" / RUN_NAME))
-    print_run_info(student, OBS_SIZE, ACT_SIZE, device, N, T, EPOCH, BATCH_SIZE, LR, DECAY, RUN_NAME)
+    writer = SummaryWriter(log_dir=str(LOGS_DIR / "distill" / EXPERIMENT_NAME))
+    print_run_info(student, OBS_SIZE, ACT_SIZE, device, N, T, EPOCH, BATCH_SIZE, LR, DECAY, EXPERIMENT_NAME)
 
-    # ---- eval routine ----
-
-    def evaluate(n: int):
+    # eval routine
+    def evaluate(step: int):
         student.eval()
         student.to("cpu")
         task_losses = []
+        all_time_alive = []
         with torch.no_grad():
             for task_id, task_name in enumerate(TASK_NAMES):
                 configureEnv(eval_env, task_id)
@@ -134,15 +127,21 @@ def main():
                 cmd_vel = info["cmd"]["x_vel"]
                 done = False
                 step_losses = []
+                time_alive = []
+                alive = 0
 
                 for _ in range(T_EVAL):
                     if done:
                         obs, info = eval_env.reset()
                         cmd_vel = info["cmd"]["x_vel"]
                         done = False
+                        time_alive.append(alive)
+                        alive = 0
+                    else:
+                        alive += 1
 
                     act_expert = forwardExpert(obs, task_id, cmd_vel)
-                    obs_s = studentObs(obs, task_id, cmd_vel)
+                    obs_s = StudentModel.obs(obs, task_id, cmd_vel)
                     pred = student(torch.tensor(obs_s, dtype=torch.float32))
                     target = torch.tensor(act_expert, dtype=torch.float32)
 
@@ -152,16 +151,36 @@ def main():
                     cmd_vel = info["cmd"]["x_vel"]
                     done = term or trunc
 
+                time_alive.append(alive)
                 task_loss = float(np.mean(step_losses))
+                task_time_alive = float(np.mean(time_alive))
                 task_losses.append(task_loss)
-                writer.add_scalar(f"eval/loss_{task_name}", task_loss, n)
+                all_time_alive.append(task_time_alive)
 
-        writer.add_scalar("eval/loss_total", float(np.mean(task_losses)), n)
+                writer.add_scalar(f"eval/loss_{task_name}", task_loss, step)
+                writer.add_scalar(f"eval/time_alive_{task_name}", task_time_alive, step)
 
-    # ---- main loop ----
+        loss_total = float(np.mean(task_losses))
+        avg_time_alive = float(np.mean(all_time_alive))
 
+        writer.add_scalar("eval/loss_total", loss_total, step)
+        writer.add_scalar("eval/avg_time_alive", avg_time_alive, step)
+
+        return (loss_total, avg_time_alive)
+
+    # create all the necessary folders
+    if not os.path.exists(MODELS_DIR):
+        os.makedirs(MODELS_DIR)
+
+    if not os.path.exists(LOGS_DIR / "distill"):
+        os.makedirs(LOGS_DIR / "distill")
+
+    os.makedirs(MODELS_DIR / EXPERIMENT_NAME, exist_ok=True)
+
+    # DAgger
     start_time = time.time()
     bar = tqdm(total=(N * T) + (N * EPOCH), desc="Training", ascii=" ░▒█")
+    best_loss = float("inf")
 
     for n in range(N):
         Di: list[tuple[np.ndarray, np.ndarray, int]] = []
@@ -169,30 +188,41 @@ def main():
         # 1. collect trajectories under current student policy
         student.to("cpu")
         student.eval()
+        time_alive = []
         with torch.no_grad():
             done = True
+            alive = 0
+            
             for _ in range(T):
                 if done:
                     current_task = int(np.random.choice(4))
                     configureEnv(env, current_task)
                     obs, info = env.reset()
                     cmd_vel = info["cmd"]["x_vel"]
+                    alive = 0
 
                 act_expert = forwardExpert(obs, current_task, cmd_vel)
-                obs_s = studentObs(obs, current_task, cmd_vel)
+                # add zero-mean gaussian noise
+                act_expert += np.random.normal(0, ACT_VAR**2, act_expert.shape)
+                
+                obs_s = StudentModel.obs(obs, current_task, cmd_vel)
                 act_student = student(torch.tensor(obs_s, dtype=torch.float32)).numpy()
 
+                alive += 1
                 obs, _, term, trunc, info = env.step(act_student)
                 cmd_vel = info["cmd"]["x_vel"]
                 done = term or trunc
 
+                if done:
+                    time_alive.append(alive)
+
                 Di.append((obs_s, act_expert, current_task))
                 bar.update(1)
-
+        
         # 2. aggregate dataset
         D += Di
 
-        # 3. train student on full D
+        # 3. train student on full (D)ataset
         obs_list, act_list, task_ids_all = zip(*D)  # type: ignore
         x_full = torch.tensor(np.array(obs_list), dtype=torch.float32)
         y_full = torch.tensor(np.array(act_list), dtype=torch.float32)
@@ -220,8 +250,10 @@ def main():
             bar.update(1)
 
         # log per-iteration scalars
-        writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], n)
-        writer.add_scalar("train/dataset_size", len(D), n)
+        writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], n * EPOCH)
+        writer.add_scalar("train/dataset_size", len(D), n * EPOCH)
+        if time_alive:
+            writer.add_scalar("train/avg_time_alive", float(np.mean(time_alive)), n * EPOCH)
 
         # per-expert training loss on full accumulated dataset
         student.eval()
@@ -235,11 +267,25 @@ def main():
                     writer.add_scalar(
                         f"train/loss_{task_name}",
                         F.mse_loss(pred_all[idx_t], y_full[idx_t]).item(),
-                        n,
+                        n * EPOCH,
                     )
 
         # 4. eval
-        evaluate(n)
+        eval_loss, _ = evaluate(n * EPOCH)
+        
+        # 5. save checkpoints
+        if n % CKPT_INT == 0 or n == N - 1:
+            torch.save({
+                "policy": student.state_dict(),
+                "optimizer": optimizer.state_dict(),
+            }, str(MODELS_DIR / EXPERIMENT_NAME / f"distill_{n}.pt"))
+        if n % BEST_INT == 0:
+            if eval_loss < best_loss:  # save best model
+                torch.save({
+                    "policy": student.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                }, str(MODELS_DIR / EXPERIMENT_NAME / f"best.pt"))
+                best_loss = eval_loss
 
     bar.close()
     writer.close()
@@ -251,7 +297,7 @@ def main():
         subprocess.run(
             [
                 "osascript", "-e",
-                f'display notification "Finished in {duration}" with title "Distillation complete" subtitle "{RUN_NAME}"',
+                f'display notification "Finished in {duration}" with title "Distillation complete" subtitle "{EXPERIMENT_NAME}"',
             ],
             check=False,
         )

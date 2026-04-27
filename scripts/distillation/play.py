@@ -7,15 +7,17 @@ from stable_baselines3 import PPO
 from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 
+import torch
 from utils.paths import MODELS_DIR
 from wrappers.bipedal_walker.distill_env import DistillEnv
+from mdp.bipedal_walker.student import StudentModel
 
 # =========================================
 
-EXPERIMENT_NAME = "experts"
-# MODEL_CHECKPOINT = "walk_forward"
-MODEL_CHECKPOINT = "walk_backward"
-# MODEL_CHECKPOINT = "sit"
+# EXPERIMENT_NAME = "distill/2-16_12_47-2026_04_27"
+EXPERIMENT_NAME = "distill/2_1-16_27_47-2026_04_27"
+
+MODEL_CHECKPOINT = "best.pt"
 
 # =========================================
 
@@ -41,10 +43,10 @@ def main():
         env,
         ep_time=15,
         tasks={
+            0: "walk forward",
             1: "walk back",
-            2: "walk foward",
+            2: "hop forward",
             3: "hop back",
-            4: "hop back",
         }
     )
     
@@ -52,19 +54,30 @@ def main():
     screen = pygame.display.set_mode((600, 400))
     clock = pygame.time.Clock()
     
-    # configure env and reset
-    env.set_task(1);
-    env.config_cmd_vel((-5.0, 0.0), 5, 0.5)
-    env.config_hull_reset(x_range=(40, 80), y_range=(0.0, 0.5), vel_x_range=(-0.5, 0.5))
+    def configureEnv(e: DistillEnv, task_id: int):
+        # config the env to a certain task
+        if task_id == 0 or task_id == 2:  # walk / hop forward
+            x_range = (0.0, 40.0)
+            vel_range = (0.0, 5.0)
+        else:  # walk / hop backward
+            x_range = (40.0, 80.0)
+            vel_range = (-5.0, 0.0)
+        e.set_task(task_id)
+        e.config_hull_reset(x_range=x_range, y_range=(0.2, 0.3))
+        e.config_cmd_vel(sample_range=vel_range, interp_time=0.5)
+    
+    configureEnv(env, 0)
     obs, info = env.reset()
     cmd_x_vel = info["cmd"]["x_vel"]
-
-    # wrap_env.action_space.seed(SEED)
+    task_id = 0
 
     # load model
     print(f'Loading model "{MODEL_CHECKPOINT}"...')
-    model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"
-    model = PPO.load(model_path, env=None, device="cpu")
+    model_path = MODELS_DIR / EXPERIMENT_NAME / MODEL_CHECKPOINT
+    model = StudentModel()
+    model.to("cpu")
+    model.load_state_dict(torch.load(model_path, weights_only=False)["policy"])
+    model.eval()
 
     # manually render
     def render():
@@ -76,37 +89,42 @@ def main():
 
         clock.tick(50)
 
-    while 1:
-        pygame.event.pump()  # keep window alive on pause
+    with torch.no_grad():
+        while 1:
+            pygame.event.pump()  # keep window alive on pause
 
-        if _sim_res:
-            # randomly choose a task
-            env.set_task(np.random.choice([1, 2, 3, 4]))
-            
-            _sim_res = False
-            obs, _ = env.reset()
-            render()
-            continue
-
-        if _sim_paused:
-            if not _sim_step:
+            if _sim_res:
+                # randomly choose a task
+                task_id = np.random.choice([0, 1, 2, 3])
+                configureEnv(env, task_id)
+                obs, info = env.reset()
+                cmd_x_vel = info["cmd"]["x_vel"]
+                
+                _sim_res = False
+                render()
+                
                 continue
-            else:
-                _sim_step = False
 
-        assert env.action_space.shape is not None
+            if _sim_paused:
+                if not _sim_step:
+                    continue
+                else:
+                    _sim_step = False
 
-        # append command to model input
-        # obs = np.append(obs, cmd_x_vel)
-        
-        action, _ = model.predict(obs, deterministic=True)
-        obs, _, term, trunc, info = env.step(action)
-        cmd_x_vel = info["cmd"]["x_vel"]  # update command
+            assert env.action_space.shape is not None
 
-        render()
+            # append command to model input
+            # obs = np.append(obs, cmd_x_vel)
+            
+            obs_s = model.obs(obs, task_id, cmd_x_vel)
+            action = model(torch.tensor(obs_s, dtype=torch.float32))
+            obs, _, term, trunc, info = env.step(action)
+            cmd_x_vel = info["cmd"]["x_vel"]  # update command
 
-        if term or trunc:
-            _sim_res = True
+            render()
+
+            if term or trunc:
+                _sim_res = True
 
 
 def on_press(key: Key | KeyCode | None) -> None:
