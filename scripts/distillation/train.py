@@ -16,6 +16,7 @@ import numpy as np
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import pygame
 from pynput import keyboard as kb
@@ -35,7 +36,7 @@ EXPERT_MODEL_PATHS = [
 
 TASK_NAMES = ["walk_forward", "walk_backward", "hop_forward", "hop_backward"]
 
-EXPERIMENT_NAME = "distill/2_1" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "distill/temp_5" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 
 _sim_paused = False
 _sim_step = False
@@ -57,7 +58,7 @@ def main():
     # 2: hop forward
     # 3: hop backward
     
-    env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10)
+    env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=7)
     eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10)
 
     # load  models
@@ -71,14 +72,20 @@ def main():
     # helpers for training and eval
     def configureEnv(e: DistillEnv, task_id: int):
         # config the env to a certain task
-        if task_id == 0 or task_id == 2:  # walk / hop forward
+        if task_id == 0:  # walk forward
             x_range = (0.0, 40.0)
             vel_range = (0.0, 5.0)
-        else:  # walk / hop backward
+        elif task_id == 2:  # hop forward
+            x_range = (0.0, 40.0)
+            vel_range = (0.0, 5.0)
+        elif task_id == 1:  # walk backward
+            x_range = (40.0, 80.0)
+            vel_range = (-5.0, 0.0)
+        elif task_id == 3:  # hop backward
             x_range = (40.0, 80.0)
             vel_range = (-5.0, 0.0)
         e.config_hull_reset(x_range=x_range)
-        e.config_cmd_vel(sample_range=vel_range, interp_time=0.5)
+        e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.35)
 
     def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float) -> np.ndarray:
         # at 0 cmd velocity, default locomotion tasks to forward ones
@@ -91,15 +98,24 @@ def main():
         # get an expert's opinion lol
         action, _ = EXPERT_MODELS[task_id].predict(np.append(obs, cmd_vel), deterministic=True)
         return action
+    
+    def getTaskPMF(t: list[float], k: float):
+        assert 0 <= k <= 1
+        w = [max(t) - i for i in t]
+        sum_w = sum(w)
+        U = [1/len(t)] * len(t)
+        P = [U[i] if sum_w == 0 else w[i]/sum_w for i in range(len(t))]
+        return [k*p_i + (1-k)*u_i for p_i, u_i in zip(P, U)]
 
     # DAgger hyperparams
-    T = 1000                # env steps per iter
-    N = 20                  # num iterations to go thru
+    T = 1500                # env steps per iter
+    N = 40                  # num iterations to go thru
     EPOCH = 30              # training epochs per iteration
     BATCH_SIZE = 256
     LR = 1e-3
     DECAY = 1e-2
-    ACT_VAR = 0           # action variance during data collection
+    ACT_VAR = 0.2           # action variance during data collection
+    K = 0.9                 # how much to prioritize choosing worst task (1 = max, 0 = uniform)
     T_EVAL = 500            # eval steps per expert task
     
     # training settings
@@ -108,6 +124,7 @@ def main():
 
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.AdamW(student.parameters(), lr=LR, weight_decay=DECAY)
+    # scheduler = CosineAnnealingLR(optimizer, T_max=EPOCH*N, eta_min=3e-5)
 
     D: list[tuple[np.ndarray, np.ndarray, int]] = []
 
@@ -166,7 +183,7 @@ def main():
         writer.add_scalar("eval/loss_total", loss_total, step)
         writer.add_scalar("eval/avg_time_alive", avg_time_alive, step)
 
-        return (loss_total, avg_time_alive)
+        return (loss_total, avg_time_alive, all_time_alive)
 
     # create all the necessary folders
     if not os.path.exists(MODELS_DIR):
@@ -181,6 +198,7 @@ def main():
     start_time = time.time()
     bar = tqdm(total=(N * T) + (N * EPOCH), desc="Training", ascii=" ░▒█")
     best_loss = float("inf")
+    task_live_time = [1., 1., 1., 1.]
 
     for n in range(N):
         Di: list[tuple[np.ndarray, np.ndarray, int]] = []
@@ -195,7 +213,7 @@ def main():
             
             for _ in range(T):
                 if done:
-                    current_task = int(np.random.choice(4))
+                    current_task = int(np.random.choice(4, p=getTaskPMF(task_live_time, K)))
                     configureEnv(env, current_task)
                     obs, info = env.reset()
                     cmd_vel = info["cmd"]["x_vel"]
@@ -203,7 +221,7 @@ def main():
 
                 act_expert = forwardExpert(obs, current_task, cmd_vel)
                 # add zero-mean gaussian noise
-                act_expert += np.random.normal(0, ACT_VAR**2, act_expert.shape)
+                act_expert += np.random.normal(0, ACT_VAR**0.5, act_expert.shape)
                 
                 obs_s = StudentModel.obs(obs, current_task, cmd_vel)
                 act_student = student(torch.tensor(obs_s, dtype=torch.float32)).numpy()
@@ -244,6 +262,7 @@ def main():
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+                # scheduler.step()
                 epoch_loss += loss.item()
 
             writer.add_scalar("train/loss", epoch_loss / len(loader), n * EPOCH + epoch)
@@ -260,6 +279,7 @@ def main():
         student.to("cpu")
         with torch.no_grad():
             pred_all = student(x_full)
+            total_D = len(task_ids_all)
             for task_id, task_name in enumerate(TASK_NAMES):
                 indices = [i for i, t in enumerate(task_ids_all) if t == task_id]
                 if indices:
@@ -269,9 +289,14 @@ def main():
                         F.mse_loss(pred_all[idx_t], y_full[idx_t]).item(),
                         n * EPOCH,
                     )
+                writer.add_scalar(
+                    f"train/task_pct_{task_name}",
+                    len(indices) / total_D,
+                    n * EPOCH,
+                )
 
         # 4. eval
-        eval_loss, _ = evaluate(n * EPOCH)
+        eval_loss, _, task_live_time = evaluate(n * EPOCH)
         
         # 5. save checkpoints
         if n % CKPT_INT == 0 or n == N - 1:

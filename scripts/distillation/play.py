@@ -15,7 +15,25 @@ from mdp.bipedal_walker.student import StudentModel
 # =========================================
 
 # EXPERIMENT_NAME = "distill/2-16_12_47-2026_04_27"
-EXPERIMENT_NAME = "distill/2_1-16_27_47-2026_04_27"
+# EXPERIMENT_NAME = "distill/2_1-16_27_47-2026_04_27"
+# EXPERIMENT_NAME = "distill/3-16_37_45-2026_04_27"
+# EXPERIMENT_NAME = "distill/4-21_51_40-2026_04_27"
+# EXPERIMENT_NAME = "distill/4_1-22_22_28-2026_04_27"
+# EXPERIMENT_NAME = "distill/4_2-22_34_06-2026_04_27"
+# EXPERIMENT_NAME = "distill/4_3-22_57_05-2026_04_27"
+# EXPERIMENT_NAME = "distill/5-14_28_18-2026_04_28"
+# EXPERIMENT_NAME = "distill/5_1-14_41_02-2026_04_28"
+# EXPERIMENT_NAME = "distill/5_2-14_41_15-2026_04_28"
+# EXPERIMENT_NAME = "distill/5_3-15_03_06-2026_04_28"
+# EXPERIMENT_NAME = "distill/5_4-15_11_49-2026_04_28"
+# EXPERIMENT_NAME = "distill/5_5-15_12_03-2026_04_28"
+# EXPERIMENT_NAME = "distill/5_6-15_12_22-2026_04_28"
+
+# EXPERIMENT_NAME = "distill/temp_1-15_32_25-2026_04_28"
+# EXPERIMENT_NAME = "distill/temp_2-15_32_31-2026_04_28"
+EXPERIMENT_NAME = "distill/temp_3-15_32_35-2026_04_28"
+# EXPERIMENT_NAME = "distill/temp_4-15_32_38-2026_04_28"
+# EXPERIMENT_NAME = "distill/temp_5-15_32_41-2026_04_28"
 
 MODEL_CHECKPOINT = "best.pt"
 
@@ -24,10 +42,11 @@ MODEL_CHECKPOINT = "best.pt"
 _sim_paused = False
 _sim_step = False
 _sim_res = False
+_sim_task_delta = 0
 
 
 def main():
-    global _sim_paused, _sim_step, _sim_res
+    global _sim_paused, _sim_step, _sim_res, _sim_task_delta
 
     # start key listeners
     listener = keyboard.Listener(on_press=on_press)
@@ -64,7 +83,7 @@ def main():
             vel_range = (-5.0, 0.0)
         e.set_task(task_id)
         e.config_hull_reset(x_range=x_range, y_range=(0.2, 0.3))
-        e.config_cmd_vel(sample_range=vel_range, interp_time=0.5)
+        e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3)
     
     configureEnv(env, 0)
     obs, info = env.reset()
@@ -93,16 +112,19 @@ def main():
         while 1:
             pygame.event.pump()  # keep window alive on pause
 
+            if _sim_task_delta != 0:
+                task_id = (task_id + _sim_task_delta) % 4
+                _sim_task_delta = 0
+                _sim_res = True
+
             if _sim_res:
-                # randomly choose a task
-                task_id = np.random.choice([0, 1, 2, 3])
                 configureEnv(env, task_id)
                 obs, info = env.reset()
                 cmd_x_vel = info["cmd"]["x_vel"]
-                
+
                 _sim_res = False
                 render()
-                
+
                 continue
 
             if _sim_paused:
@@ -128,7 +150,7 @@ def main():
 
 
 def on_press(key: Key | KeyCode | None) -> None:
-    global _sim_paused, _sim_step, _sim_res
+    global _sim_paused, _sim_step, _sim_res, _sim_task_delta
 
     if isinstance(key, KeyCode):
         k = key.char
@@ -144,6 +166,10 @@ def on_press(key: Key | KeyCode | None) -> None:
         _sim_step = True
     elif k == "r":
         _sim_res = True
+    elif k == "w":
+        _sim_task_delta = -1
+    elif k == "e":
+        _sim_task_delta = 1
     elif k == "q":
         print("Exiting...")
         os._exit(0)

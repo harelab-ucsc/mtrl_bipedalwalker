@@ -80,7 +80,7 @@ class DistillEnv(ProprioObsWrapper):
     def config_hull_reset(
         self,
         x_range: tuple[float, float] = (0.0, 40.0),
-        y_range: tuple[float, float] = (0.0, 0.3),
+        y_range: tuple[float, float] = (0.1, 0.3),
         rot_range: tuple[float, float] = (-0.2, 0.2),
         vel_x_range: tuple[float, float] = (-0.2, 0.2),
         vel_y_range: tuple[float, float] = (0.0, 0.0),
