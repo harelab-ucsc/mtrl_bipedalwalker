@@ -22,18 +22,12 @@ from mdp.bipedal_walker.student import StudentModel
 # EXPERIMENT_NAME = "distill/4_2-22_34_06-2026_04_27"
 # EXPERIMENT_NAME = "distill/4_3-22_57_05-2026_04_27"
 # EXPERIMENT_NAME = "distill/5-14_28_18-2026_04_28"
-# EXPERIMENT_NAME = "distill/5_1-14_41_02-2026_04_28"
+EXPERIMENT_NAME = "distill/5_1-14_41_02-2026_04_28"
 # EXPERIMENT_NAME = "distill/5_2-14_41_15-2026_04_28"
 # EXPERIMENT_NAME = "distill/5_3-15_03_06-2026_04_28"
 # EXPERIMENT_NAME = "distill/5_4-15_11_49-2026_04_28"
 # EXPERIMENT_NAME = "distill/5_5-15_12_03-2026_04_28"
 # EXPERIMENT_NAME = "distill/5_6-15_12_22-2026_04_28"
-
-# EXPERIMENT_NAME = "distill/temp_1-15_32_25-2026_04_28"
-# EXPERIMENT_NAME = "distill/temp_2-15_32_31-2026_04_28"
-EXPERIMENT_NAME = "distill/temp_3-15_32_35-2026_04_28"
-# EXPERIMENT_NAME = "distill/temp_4-15_32_38-2026_04_28"
-# EXPERIMENT_NAME = "distill/temp_5-15_32_41-2026_04_28"
 
 MODEL_CHECKPOINT = "best.pt"
 

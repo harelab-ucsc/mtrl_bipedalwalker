@@ -36,7 +36,7 @@ EXPERT_MODEL_PATHS = [
 
 TASK_NAMES = ["walk_forward", "walk_backward", "hop_forward", "hop_backward"]
 
-EXPERIMENT_NAME = "distill/temp_5" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "distill/6" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 
 _sim_paused = False
 _sim_step = False
@@ -112,7 +112,7 @@ def main():
     N = 40                  # num iterations to go thru
     EPOCH = 30              # training epochs per iteration
     BATCH_SIZE = 256
-    LR = 1e-3
+    LR = 2e-3
     DECAY = 1e-2
     ACT_VAR = 0.2           # action variance during data collection
     K = 0.9                 # how much to prioritize choosing worst task (1 = max, 0 = uniform)
@@ -124,11 +124,11 @@ def main():
 
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.AdamW(student.parameters(), lr=LR, weight_decay=DECAY)
-    # scheduler = CosineAnnealingLR(optimizer, T_max=EPOCH*N, eta_min=3e-5)
+    scheduler = CosineAnnealingLR(optimizer, T_max=EPOCH*N, eta_min=3e-5)
 
     D: list[tuple[np.ndarray, np.ndarray, int]] = []
 
-    writer = SummaryWriter(log_dir=str(LOGS_DIR / "distill" / EXPERIMENT_NAME))
+    writer = SummaryWriter(log_dir=str(LOGS_DIR / EXPERIMENT_NAME))
     print_run_info(student, OBS_SIZE, ACT_SIZE, device, N, T, EPOCH, BATCH_SIZE, LR, DECAY, EXPERIMENT_NAME)
 
     # eval routine
@@ -262,9 +262,9 @@ def main():
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                # scheduler.step()
                 epoch_loss += loss.item()
 
+            scheduler.step()
             writer.add_scalar("train/loss", epoch_loss / len(loader), n * EPOCH + epoch)
             bar.update(1)
 
@@ -370,7 +370,7 @@ def print_run_info(student, obs_size, act_size, device, N, T, EPOCH, BATCH_SIZE,
 
     section(
         "logging",
-        [f"tensorboard  logs/distill/{run_name}"],
+        [f"tensorboard  logs/{run_name}"],
     )
 
     print(f"\n{'=' * 44}\n")
