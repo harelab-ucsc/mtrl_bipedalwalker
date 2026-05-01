@@ -1,4 +1,5 @@
 import os
+import warnings
 from gymnasium import make
 import numpy as np
 import pygame
@@ -10,25 +11,23 @@ from pynput.keyboard import Key, KeyCode
 import torch
 from utils.paths import MODELS_DIR
 from wrappers.bipedal_walker.distill_env import DistillEnv
-from mdp.bipedal_walker.student import StudentModel
+from mdp.bipedal_walker.student import (
+    StudentModelXS,
+    StudentModelS,
+    StudentModelM,
+    StudentModelML,
+    StudentModelL,
+    StudentModelXL,
+    StudentModel,
+    OBS_SIZE,
+    ACT_SIZE,
+)
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # =========================================
 
-# EXPERIMENT_NAME = "distill/2-16_12_47-2026_04_27"
-# EXPERIMENT_NAME = "distill/2_1-16_27_47-2026_04_27"
-# EXPERIMENT_NAME = "distill/3-16_37_45-2026_04_27"
-# EXPERIMENT_NAME = "distill/4-21_51_40-2026_04_27"
-# EXPERIMENT_NAME = "distill/4_1-22_22_28-2026_04_27"
-# EXPERIMENT_NAME = "distill/4_2-22_34_06-2026_04_27"
-# EXPERIMENT_NAME = "distill/4_3-22_57_05-2026_04_27"
-# EXPERIMENT_NAME = "distill/5-14_28_18-2026_04_28"
-EXPERIMENT_NAME = "distill/5_1-14_41_02-2026_04_28"
-# EXPERIMENT_NAME = "distill/5_2-14_41_15-2026_04_28"
-# EXPERIMENT_NAME = "distill/5_3-15_03_06-2026_04_28"
-# EXPERIMENT_NAME = "distill/5_4-15_11_49-2026_04_28"
-# EXPERIMENT_NAME = "distill/5_5-15_12_03-2026_04_28"
-# EXPERIMENT_NAME = "distill/5_6-15_12_22-2026_04_28"
-
+EXPERIMENT_NAME = "distill/l_4"
 MODEL_CHECKPOINT = "best.pt"
 
 # =========================================
@@ -37,10 +36,11 @@ _sim_paused = False
 _sim_step = False
 _sim_res = False
 _sim_task_delta = 0
+_starting_seed = 420
 
 
 def main():
-    global _sim_paused, _sim_step, _sim_res, _sim_task_delta
+    global _sim_paused, _sim_step, _sim_res, _sim_task_delta, _starting_seed
 
     # start key listeners
     listener = keyboard.Listener(on_press=on_press)
@@ -60,7 +60,7 @@ def main():
             1: "walk back",
             2: "hop forward",
             3: "hop back",
-        }
+        },
     )
     
     pygame.init()
@@ -77,17 +77,18 @@ def main():
             vel_range = (-5.0, 0.0)
         e.set_task(task_id)
         e.config_hull_reset(x_range=x_range, y_range=(0.2, 0.3))
-        e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3)
+        e.config_cmd_vel(sample_range=vel_range, interp_time=1, switch_time=3)
     
     configureEnv(env, 0)
-    obs, info = env.reset()
+    obs, info = env.reset(seed=_starting_seed)
     cmd_x_vel = info["cmd"]["x_vel"]
     task_id = 0
 
     # load model
     print(f'Loading model "{MODEL_CHECKPOINT}"...')
     model_path = MODELS_DIR / EXPERIMENT_NAME / MODEL_CHECKPOINT
-    model = StudentModel()
+    model = StudentModelL()
+
     model.to("cpu")
     model.load_state_dict(torch.load(model_path, weights_only=False)["policy"])
     model.eval()
@@ -113,7 +114,9 @@ def main():
 
             if _sim_res:
                 configureEnv(env, task_id)
-                obs, info = env.reset()
+                obs, info = env.reset(seed=_starting_seed)
+                if _starting_seed is not None:
+                    _starting_seed += 1
                 cmd_x_vel = info["cmd"]["x_vel"]
 
                 _sim_res = False

@@ -16,6 +16,7 @@ class DistillEnv(ProprioObsWrapper):
         env: Env[ObsType, ActType],
         ep_time: int = 10,
         tasks: dict[int, str] = {},
+        seed: int | None = None,
     ):
         """
         Minimal bipedal walker wrapper for distillation training.
@@ -39,6 +40,8 @@ class DistillEnv(ProprioObsWrapper):
         tasks: Specifies what tasks there are. Purely cosmetic in rendering. Default: []
         """
         super().__init__(env)
+
+        self._rng = np.random.default_rng(seed)
 
         # specified here: https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L30
         self._FPS = 50
@@ -172,8 +175,8 @@ class DistillEnv(ProprioObsWrapper):
             self._vel_switch_steps < self._max_steps
             and self._step_count % self._vel_switch_steps == 0
         ):
-            if np.random.random() > self._vel_sample_zero:
-                self._cmd_vel_target = np.random.uniform(*self._vel_sample_range)
+            if self._rng.random() > self._vel_sample_zero:
+                self._cmd_vel_target = self._rng.uniform(*self._vel_sample_range)
             else:
                 self._cmd_vel_target = 0.0
 
@@ -272,11 +275,13 @@ class DistillEnv(ProprioObsWrapper):
 
     def reset(self, *, seed=None, options=None) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
         obs, info = super().reset(seed=seed, options=options)
         
         # resample command velocity
-        if np.random.random() > self._vel_sample_zero:
-            self._cmd_vel = np.random.uniform(*self._vel_sample_range)
+        if self._rng.random() > self._vel_sample_zero:
+            self._cmd_vel = self._rng.uniform(*self._vel_sample_range)
         else:
             self._cmd_vel = 0.0
 
@@ -295,8 +300,8 @@ class DistillEnv(ProprioObsWrapper):
         LEG_H = 34 / SCALE
 
         hull.position += b2Vec2(
-            np.random.uniform(*self._hull_x_range),
-            np.random.uniform(*self._hull_y_range),
+            self._rng.uniform(*self._hull_x_range),
+            self._rng.uniform(*self._hull_y_range),
         )
 
         hull_x = env.hull.position.x
@@ -306,10 +311,10 @@ class DistillEnv(ProprioObsWrapper):
         hull.position.y += ground_y_rel
 
         hull.linearVelocity += b2Vec2(
-            np.random.uniform(*self._hull_vel_x_range),
-            np.random.uniform(*self._hull_vel_y_range),
+            self._rng.uniform(*self._hull_vel_x_range),
+            self._rng.uniform(*self._hull_vel_y_range),
         )
-        hull.angle += np.random.uniform(*self._hull_rot_range)
+        hull.angle += self._rng.uniform(*self._hull_rot_range)
 
         # get hull position and angle to calculate joint pos
         hull_a = hull.angle
@@ -325,8 +330,8 @@ class DistillEnv(ProprioObsWrapper):
             upper = legs[pair * 2]
             lower = legs[pair * 2 + 1]
 
-            hip_angle = np.random.uniform(*self._hip_range)
-            knee_angle = np.random.uniform(*self._knee_range)
+            hip_angle = self._rng.uniform(*self._hip_range)
+            knee_angle = self._rng.uniform(*self._knee_range)
 
             # world-space body angles via joint.angle = bB.angle - bA.angle - refAngle
             upper_a = hull_a + hip_refs[pair] + hip_angle
@@ -355,7 +360,7 @@ class DistillEnv(ProprioObsWrapper):
                 body.position = (bx, by)
                 body.angle = ba
                 body.linearVelocity = (0, 0)
-                body.angularVelocity = np.random.uniform(*self._joint_vel_range)
+                body.angularVelocity = self._rng.uniform(*self._joint_vel_range)
                 body.awake = True
 
         # apply the changes
