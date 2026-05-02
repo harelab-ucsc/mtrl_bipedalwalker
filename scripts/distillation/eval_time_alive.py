@@ -19,9 +19,10 @@ from mdp.bipedal_walker.student import (
     StudentModelXLL,
     StudentModelXLLL,
 )
+from mdp.bipedal_walker.hybrid import HybridModel
 
 TASK_NAMES = ["walk_forward", "walk_backward", "hop_forward", "hop_backward"]
-T_EVAL = 1000000
+T_EVAL = 1_000_000
 UPDATE_INTERVAL = 500  # steps between progress queue sends
 
 MODEL_CLASSES = {
@@ -33,6 +34,7 @@ MODEL_CLASSES = {
     "xl": StudentModelXL,
     "xll": StudentModelXLL,
     "xlll": StudentModelXLLL,
+    "hybrid": HybridModel,
 }
 
 
@@ -48,12 +50,14 @@ def _configure_env(env: DistillEnv, task_id: int):
 
 
 def _eval_task(model_name: str, model_path: str, task_id: int, q) -> None:
-    """Worker: evaluates one model on one task, streams step-batch updates then a result tuple via q."""
+    # Worker: evaluates one model on one task, streams step-batch updates then a result tuple via q.
     cls = MODEL_CLASSES[model_name]
     model = cls()
-    ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
-    model.load_state_dict(ckpt["policy"])
-    model.eval()
+    if model_name != "hybrid":
+        # hybrid model is not a pytorch nn, and the experts are loaded in the class
+        ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(ckpt["policy"])
+        model.eval()
 
     env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10)
     _configure_env(env, task_id)
@@ -77,7 +81,7 @@ def _eval_task(model_name: str, model_path: str, task_id: int, q) -> None:
                 alive += 1
 
             obs_s = StudentModel.obs(obs, task_id, cmd_vel)
-            pred = model(torch.tensor(obs_s, dtype=torch.float32))
+            pred = model.forward(torch.tensor(obs_s, dtype=torch.float32))
             obs, _, term, trunc, info = env.step(pred.numpy())
             cmd_vel = info["cmd"]["x_vel"]
             done = term or trunc
@@ -99,12 +103,9 @@ def main():
     model_entries = [
         (name, str(MODELS_DIR / "distill" / name / "best.pt"))
         for name in MODEL_CLASSES
-        if (MODELS_DIR / "distill" / name / "best.pt").exists()
+        if name != "hybrid" and (MODELS_DIR / "distill" / name / "best.pt").exists()
     ]
-
-    if not model_entries:
-        print("No models found in models/distill/")
-        return
+    model_entries.append(("hybrid", ""))
 
     jobs = [(name, path, task_id) for name, path in model_entries for task_id in range(4)]
     n_jobs = len(jobs)

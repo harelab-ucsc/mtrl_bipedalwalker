@@ -22,20 +22,23 @@ from mdp.bipedal_walker.student import (
     OBS_SIZE,
     ACT_SIZE,
 )
+from mdp.bipedal_walker.hybrid import HybridModel
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # =========================================
 
 EXPERIMENTS = [
-    ("distill/xl", "XL", StudentModelXL),
-    ("distill/m", "M", StudentModelM),
-    ("distill/xlll_3", "XLLL", StudentModelXLLL),
+    ("distill/ml", "ML (70,324)", StudentModelML),
+    ("distill/xl", "XL (173,956)", StudentModelXL),
+    ("distill/m", "M (46,020)", StudentModelM),
+    ("hybrid", "Hybrid (MoE)", HybridModel),
 ]
 
 MODEL_CHECKPOINT = "best.pt"
 
 ENV_W, ENV_H = 600, 400
+MAX_COLS = 2
 
 # =========================================
 
@@ -73,15 +76,19 @@ def main():
     models: list[StudentModel] = []
     for exp_name, label, model_class in EXPERIMENTS:
         m = model_class()
-        m.to("cpu")
-        m.load_state_dict(torch.load(MODELS_DIR / exp_name / MODEL_CHECKPOINT, weights_only=False)["policy"])
-        m.eval()
+        if exp_name != "hybrid":
+            # hybrid model is not a pytorch nn, and the experts are loaded in the class
+            m.to("cpu")
+            m.load_state_dict(torch.load(MODELS_DIR / exp_name / MODEL_CHECKPOINT, weights_only=False)["policy"])
+            m.eval()
         models.append(m)
         print(f'  Loaded "{label}"')
 
     pygame.init()
     pygame.font.init()
-    screen = pygame.display.set_mode((ENV_W * len(envs), ENV_H))
+    n_cols = min(len(envs), MAX_COLS)
+    n_rows = -(-len(envs) // MAX_COLS)  # ceil division
+    screen = pygame.display.set_mode((ENV_W * n_cols, ENV_H * n_rows))
     clock = pygame.time.Clock()
     label_font = pygame.font.SysFont("Courier New", 32, bold=True)
 
@@ -117,6 +124,8 @@ def main():
 
     def render():
         for i, (env, (_, label, _)) in enumerate(zip(envs, EXPERIMENTS)):
+            col, row = i % n_cols, i // n_cols
+            x, y = col * ENV_W, row * ENV_H
             if done_list[i]:
                 surf = pygame.Surface((ENV_W, ENV_H))
                 surf.fill((0, 0, 0))
@@ -127,9 +136,9 @@ def main():
                 else:
                     surf = pygame.Surface((ENV_W, ENV_H))
                     surf.fill((0, 0, 0))
-            screen.blit(surf, (i * ENV_W, 0))
+            screen.blit(surf, (x, y))
             lbl = label_font.render(label, True, (0, 0, 255))
-            screen.blit(lbl, (i * ENV_W + ENV_W - lbl.get_width() - 15, 10))
+            screen.blit(lbl, (x + ENV_W - lbl.get_width() - 15, y + 10))
         pygame.display.flip()
         clock.tick(50)
 
@@ -160,7 +169,7 @@ def main():
                 if done_list[i]:
                     continue
                 obs_s = model.obs(obs_list[i], task_id, cmd_vels[i])
-                action = model(torch.tensor(obs_s, dtype=torch.float32))
+                action = model.forward(torch.tensor(obs_s, dtype=torch.float32))
                 obs, _, term, trunc, info = env.step(action)
                 obs_list[i] = obs
                 cmd_vels[i] = info["cmd"]["x_vel"]
