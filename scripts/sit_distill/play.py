@@ -61,7 +61,7 @@ def main():
     listener.start()
 
     env = make("BipedalWalker-v3", render_mode="rgb_array")
-    env = DistillEnv(env, ep_time=15, tasks={1: "sit"})
+    env = DistillEnv(env, ep_time=15, task_names={1: "sit"})
     env.set_task(1)
     env.config_hull_reset(
         x_range=(0.0, 40.0), y_range=(0.0, 0.3),

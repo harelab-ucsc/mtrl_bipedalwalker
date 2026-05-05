@@ -15,7 +15,7 @@ class DistillEnv(ProprioObsWrapper):
         self,
         env: Env[ObsType, ActType],
         ep_time: int = 10,
-        tasks: dict[int, str] = {},
+        task_names: dict[int, str] = {},
         seed: int | None = None,
     ):
         """
@@ -74,7 +74,7 @@ class DistillEnv(ProprioObsWrapper):
         self._cmd_vel_buf: list[float] = [0.0]  # smooth out transitions
 
         # tasks (purely cosmetic)
-        self._tasks = tasks
+        self._task_names = task_names
         self._cur_task_id = 0
 
     def set_task(self, id):
@@ -191,21 +191,6 @@ class DistillEnv(ProprioObsWrapper):
 
         return obs, 0, term, trunc, info  # no reward information needed
 
-    def render(self):
-        result = super().render()  # gets rgb_array frame with base rendering done
-
-        env: Any = self.unwrapped
-        if not hasattr(env, "surf") or env.surf is None:
-            return result
-
-        self._draw_velocity_arrows(env)
-        self._draw_task_info(env)
-
-        # re-grab the frame after drawing on surf
-        return np.transpose(
-            np.array(pygame.surfarray.pixels3d(env.surf)), axes=(1, 0, 2)
-        )[:, -600:]
-
     def _draw_velocity_arrows(self, env):
         unwrapped: Any = self.unwrapped
         real_vel_x: float = unwrapped.hull.linearVelocity.x
@@ -252,14 +237,14 @@ class DistillEnv(ProprioObsWrapper):
     def _draw_task_info(self, env):
         unwrapped: Any = self.unwrapped
         real_vel_x: float = unwrapped.hull.linearVelocity.x
-        
+
         SCALE = 30.0
         MARGIN = 10.0
 
         pygame.font.init()
         font = pygame.font.SysFont("Courier New", 16, bold=True)
 
-        task_name = self._tasks.get(self._cur_task_id, "NA")
+        task_name = self._task_names.get(self._cur_task_id, "NA")
         lines = [
             f"task:  {task_name}",
             f"cmd_x_vel: {self._cmd_vel:+.2f}",
@@ -273,12 +258,27 @@ class DistillEnv(ProprioObsWrapper):
             env.surf.blit(surf, (scroll_x, y))
             y += surf.get_height() + 2
 
+    def render(self):
+        result = super().render()  # gets rgb_array frame with base rendering done
+
+        env: Any = self.unwrapped
+        if not hasattr(env, "surf") or env.surf is None:
+            return result
+
+        self._draw_velocity_arrows(env)
+        self._draw_task_info(env)
+
+        # re-grab the frame after drawing on surf
+        return np.transpose(
+            np.array(pygame.surfarray.pixels3d(env.surf)), axes=(1, 0, 2)
+        )[:, -600:]
+
     def reset(self, *, seed=None, options=None) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0
         if seed is not None:
             self._rng = np.random.default_rng(seed)
         obs, info = super().reset(seed=seed, options=options)
-        
+
         # resample command velocity
         if self._rng.random() > self._vel_sample_zero:
             self._cmd_vel = self._rng.uniform(*self._vel_sample_range)

@@ -12,7 +12,6 @@ class HopFTEnv(HopEnv):
         self,
         env: Env[ObsType, ActType],
         ep_time: int = 10,
-        man_vel_ctrl: bool = False,
         vel_switching_freq: float = 10,
         vel_interp_speed: float = 1,
         vel_sample_range: tuple[float, float] = (-2.5, 2.5),
@@ -38,7 +37,6 @@ class HopFTEnv(HopEnv):
         super().__init__(
             env,
             ep_time,
-            man_vel_ctrl,
             vel_switching_freq,
             vel_interp_speed,
             vel_sample_range,

@@ -19,32 +19,6 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 # =========================================
 
-# EXPERIMENT_NAME = "stand_8-18_50_45-2026_04_01"
-
-# EXPERIMENT_NAME = "hop_forward/hop_forward_7-15_49_36-2026_04_09"
-# EXPERIMENT_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
-# EXPERIMENT_NAME = "hop_forward/hop_forward_8-01_47_33-2026_04_16"
-# EXPERIMENT_NAME = "hop_forward/hop_forward_8_1-01_50_21-2026_04_16"
-
-# EXPERIMENT_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
-# EXPERIMENT_NAME = "hop_backward/hop_backward_3_2-15_46_14-2026_04_15"
-
-# EXPERIMENT_NAME = "walk_forward/walk_forward_9-00_50_10-2026_04_12"
-# EXPERIMENT_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
-# EXPERIMENT_NAME = "walk_forward/walk_forward_11-02_05_14-2026_04_16"
-# EXPERIMENT_NAME = "walk_forward/walk_forward_11_1-03_09_34-2026_04_16"
-# EXPERIMENT_NAME = "walk_forward/walk_forward_11-02_05_14-2026_04_16"
-
-# EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
-# EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
-# EXPERIMENT_NAME = "walk_backward/walk_backward_7_1"
-# EXPERIMENT_NAME = "walk_backward/walk_backward_7_2-00_06_27-2026_04_15"
-# EXPERIMENT_NAME = "walk_backward/walk_backward_7_3-00_06_54-2026_04_15"
-# EXPERIMENT_NAME = "walk_backward/walk_backward_7_4-00_07_13-2026_04_15"
-# EXPERIMENT_NAME = "walk_backward/walk_backward_7_5-00_16_04-2026_04_15"
-# EXPERIMENT_NAME = "walk_backward/walk_backward_7_6-00_22_45-2026_04_15"
-# MODEL_CHECKPOINT = "best/best_model"
-
 EXPERIMENT_NAME = "experts"
 MODEL_CHECKPOINT = "walk_forward"
 # None  → no plots
@@ -72,11 +46,9 @@ def main():
     print("Loading environments...")
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
-    wrap_env = ProprioObsWrapper(
-        RlFTEnv(
-            env,
-            ep_time=7
-        )
+    wrap_env = RlFTEnv(
+        env,
+        ep_time=7
     )
     # wrap_env = env
     if PLOT_MODE == "obs":

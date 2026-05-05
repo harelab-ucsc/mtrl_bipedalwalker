@@ -55,7 +55,7 @@ def main():
     env = DistillEnv(
         env,
         ep_time=15,
-        tasks={
+        task_names={
             0: "walk forward",
             1: "walk back",
             2: "hop forward",
