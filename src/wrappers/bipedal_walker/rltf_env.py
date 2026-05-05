@@ -252,12 +252,12 @@ class RlFTEnv(ProprioObsWrapper):
         font = pygame.font.SysFont("Courier New", 16, bold=True)
 
         task_name = "NA"
-        if self._cmd_vel < 0:
-            task_name = "walk backward" if self._cmd_task_id == 0 else "hop backward"
+        if self._cmd_vel == 0:
+            task_name = "walk @ 0" if self._cmd_task_id == 0 else "hop @ 0"
         elif self._cmd_vel > 0:
             task_name = "walk forward" if self._cmd_task_id == 0 else "hop forward"
-        elif self._cmd_vel == 0:
-            task_name = "stand (walk 0 velocity)" if self._cmd_task_id == 0 else "flamingo (hop 0 velocity)"
+        else:
+            task_name = "walk backward" if self._cmd_task_id == 0 else "hop backward"
             
         lines = [
             f"task:  {task_name}",

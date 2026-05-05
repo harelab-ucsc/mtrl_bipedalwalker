@@ -40,8 +40,9 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-DISTILLED_STUDENT = "distill/ml/best.pt"
-EXPERIMENT_NAME = "rlft/pretrain/ml"
+MODEL_SIZE = "l"
+DISTILLED_STUDENT = f"distill/{MODEL_SIZE}/best.pt"
+EXPERIMENT_NAME = "rlft/pretrain/{MODEL_SIZE}"
 TIMESTEPS = 100 * 1024 * 14  # pretraining needs a lot less timesteps
 
 # =========================================
