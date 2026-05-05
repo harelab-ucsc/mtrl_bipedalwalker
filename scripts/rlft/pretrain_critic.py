@@ -7,7 +7,6 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
-from stable_baselines3.common.utils import LinearSchedule
 from stable_baselines3.common.monitor import Monitor
 
 from stable_baselines3.common.callbacks import (
@@ -42,10 +41,8 @@ if not os.path.exists(LOGS_DIR):
 # =========================================
 
 DISTILLED_STUDENT = "distill/ml/best.pt"
-EXPERIMENT_NAME = "rlft/pretrained/ml_4" + datetime.today().strftime(
-    "-%H_%M_%S-%Y_%m_%d"
-)
-TIMESTEPS = 400 * 1024 * 14
+EXPERIMENT_NAME = "rlft/pretrain/ml"
+TIMESTEPS = 100 * 1024 * 14  # pretraining needs a lot less timesteps
 
 # =========================================
 
@@ -131,10 +128,10 @@ def main():
         RlFTPolicy,
         env=train_env,
         policy_kwargs=dict(hidden_dims=[320, 160, 80], activation_fn=torch.nn.ELU),
-        learning_rate=LinearSchedule(1e-3, 5e-4, 1.0),
-        n_epochs=25,
+        learning_rate=1e-3,
+        n_epochs=10,
         n_steps=1024,
-        batch_size=64,
+        batch_size=512,
         ent_coef=0,
         vf_coef=1.0  # fine cuz we froze actor
     )
@@ -169,7 +166,7 @@ def main():
     for p in action_net.parameters():
         p.requires_grad_(False)
     with torch.no_grad():  # initialize log_std to something small
-        model.policy.log_std.fill_(-3.0)  # std approx 0.05,
+        model.policy.log_std.fill_(-3.69)  # std approx 0.025,
     sb3_policy.log_std.requires_grad_(False)
 
     # configure logger

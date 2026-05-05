@@ -62,12 +62,6 @@ class RlFTEnv(ProprioObsWrapper):
             vel_interp_speed * FPS
         )  # smooth out transitions
         self._cmd_task_id: int = 0  # 0 = walk, 1 = hop
-        self._task_names = {  # for rendering only
-            0: "walk forward",
-            1: "walk back",
-            2: "hop forward",
-            3: "hop back",
-        }
 
         # previous hull velocities and accelerations for jerk calculation
         self._prev_vel_x: float = 0.0
@@ -257,7 +251,14 @@ class RlFTEnv(ProprioObsWrapper):
         pygame.font.init()
         font = pygame.font.SysFont("Courier New", 16, bold=True)
 
-        task_name = self._task_names.get(self._cmd_task_id, "NA")
+        task_name = "NA"
+        if self._cmd_vel < 0:
+            task_name = "walk backward" if self._cmd_task_id == 0 else "hop backward"
+        elif self._cmd_vel > 0:
+            task_name = "walk forward" if self._cmd_task_id == 0 else "hop forward"
+        elif self._cmd_vel == 0:
+            task_name = "stand (walk 0 velocity)" if self._cmd_task_id == 0 else "flamingo (hop 0 velocity)"
+            
         lines = [
             f"task:  {task_name}",
             f"cmd_x_vel: {self._cmd_vel:+.2f}",

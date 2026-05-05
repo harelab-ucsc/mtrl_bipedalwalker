@@ -19,8 +19,8 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 # =========================================
 
-EXPERIMENT_NAME = "experts"
-MODEL_CHECKPOINT = "walk_forward"
+EXPERIMENT_NAME = "rlft/pretrain/ml"
+MODEL_CHECKPOINT = "best/best_model"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)
