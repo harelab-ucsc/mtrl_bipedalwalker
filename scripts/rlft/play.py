@@ -19,7 +19,10 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 # =========================================
 
-EXPERIMENT_NAME = "rlft/pretrain/ml"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_1-16_09_36-2026_05_05"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_2_g95-02_20_25-2026_05_07"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.1_g99-17_38_43-2026_05_07"
+EXPERIMENT_NAME = "rlft/finetuned/ml_3.2_g99-17_57_41-2026_05_07"
 MODEL_CHECKPOINT = "best/best_model"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
@@ -48,7 +51,8 @@ def main():
 
     wrap_env = RlFTEnv(
         env,
-        ep_time=7
+        vel_interp_speed=1.0,
+        task_switching_freq=6
     )
     # wrap_env = env
     if PLOT_MODE == "obs":

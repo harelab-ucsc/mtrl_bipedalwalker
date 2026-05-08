@@ -1,4 +1,4 @@
-from typing import Any, SupportsFloat, cast
+from typing import Any, Literal, SupportsFloat, cast
 
 from gymnasium import Env, Wrapper
 from gymnasium.core import ActType, ObsType
@@ -15,6 +15,8 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 from mdp.bipedal_walker.rl_finetune_rewards import hop_rew, walk_rew
 
+Landscapes = Literal["walk", "hop"]
+LandscapeConfig = dict[Landscapes, tuple[float, float]]
 
 class RlFTEnv(ProprioObsWrapper):
     def __init__(
@@ -22,16 +24,17 @@ class RlFTEnv(ProprioObsWrapper):
         env: Env[ObsType, ActType],
         ep_time: int = 20,
         vel_switching_freq: float = 3,
-        task_switching_freq: float = 5,
+        task_switching_freq: float = 6,
         vel_interp_speed: float = 0.5,
         vel_sample_range: tuple[float, float] = (-5.0, 5.0),
         vel_sample_zero: float = 0.2,
         hull_x_range: tuple[float, float] = (20.0, 60.0),
+        landscape_correction: LandscapeConfig = {},  # set initial mean / variance corrections for each reward landscape
     ):
         """
         Wrapper for performing RL distillation, as described here:
         https://arxiv.org/pdf/2505.11164
-        
+
         Unlike the distillation env, where the training script controls task sampling
         and task configuration, this env will control task sampling. The main reason
         is that this env needs to compute corresponding rewards for each tasks, and
@@ -43,7 +46,7 @@ class RlFTEnv(ProprioObsWrapper):
         # specified here: https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L30
         FPS = 50
 
-        # environmental and training setups        
+        # environmental and training setups
         self._max_steps: int = ep_time * FPS
         self._step_count: int = 0
 
@@ -62,26 +65,32 @@ class RlFTEnv(ProprioObsWrapper):
             vel_interp_speed * FPS
         )  # smooth out transitions
         self._cmd_task_id: int = 0  # 0 = walk, 1 = hop
+        
+        # reward landscape correction terms
+        self._landscape_correction = landscape_correction
 
         # previous hull velocities and accelerations for jerk calculation
         self._prev_vel_x: float = 0.0
         self._prev_vel_y: float = 0.0
         self._prev_accel_x: float = 0.0
         self._prev_accel_y: float = 0.0
-        
+
         # leg contacts for hop reward calculation
         self._last_leg_contact = -1  # 0 -> left; 1 -> right; -1 -> unset
         self._last_obs_8 = 0.0
         self._last_obs_13 = 0.0
         self._steps_since_hop = 0
-        
+
         # configure observation space to fit the new cmds
         base = self.observation_space
         self.observation_space = spaces.Box(
-            low=np.concatenate([base.low, [-np.inf, 0.0, 0.0]]), # type: ignore
-            high=np.concatenate([base.high, [np.inf, 1.0, 1.0]]), # type: ignore
+            low=np.concatenate([base.low, [-np.inf, 0.0, 0.0]]),  # type: ignore
+            high=np.concatenate([base.high, [np.inf, 1.0, 1.0]]),  # type: ignore
             dtype=np.float64,
         )
+        
+    def apply_landscape_correction(self, landscape: Landscapes, mean: float, var: float):
+        self._landscape_correction[landscape] = (mean, var)
 
     def _compute_walk_reward(
         self, obs: np.ndarray, terminated: bool
@@ -96,7 +105,7 @@ class RlFTEnv(ProprioObsWrapper):
             prev_accel_x=self._prev_accel_x,
             prev_accel_y=self._prev_accel_y,
         )
-    
+
     def _compute_hop_reward(
         self, obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float]]:
@@ -108,16 +117,16 @@ class RlFTEnv(ProprioObsWrapper):
             last_leg_contact=self._last_leg_contact,
             last_obs_8=self._last_obs_8,
             last_obs_13=self._last_obs_13,
-            steps_since_hop=self._steps_since_hop
+            steps_since_hop=self._steps_since_hop,
         )
         # update hop state
         self._last_leg_contact = state_update["last_leg_contact"]
         self._last_obs_8 = state_update["last_obs_8"]
         self._last_obs_13 = state_update["last_obs_13"]
         self._steps_since_hop = state_update["steps_since_hop"]
-        
+
         return r, r_terms, r_raws, r_weights
-        
+
     def _derive_full_obs(
         self, base_obs: np.ndarray, cmd_vel: float, task_id: int
     ) -> np.ndarray:
@@ -129,7 +138,7 @@ class RlFTEnv(ProprioObsWrapper):
     ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
         env: BipedalWalker = cast(BipedalWalker, self.unwrapped)
         assert env.hull, "cannot find env.hull — environment may be broken!"
-        
+
         pre_vel_x = env.hull.linearVelocity.x
         pre_vel_y = env.hull.linearVelocity.y
 
@@ -139,7 +148,7 @@ class RlFTEnv(ProprioObsWrapper):
         # detect truncation
         self._step_count += 1
         trunc = trunc or self._step_count >= self._max_steps
-        
+
         # compute reward + term infos based on task_id
         if self._cmd_task_id == 0:  # compute walk reward
             rew, info["reward_terms"], info["reward_raw"], info["reward_weights"] = (
@@ -149,12 +158,29 @@ class RlFTEnv(ProprioObsWrapper):
             rew, info["reward_terms"], info["reward_raw"], info["reward_weights"] = (
                 self._compute_hop_reward(base_obs, term)
             )
+            
+        # apply corrective terms when specified
+        task_rew_raw = rew
+        walk_cfg = self._landscape_correction.get("walk")
+        hop_cfg = self._landscape_correction.get("hop")
+        if walk_cfg is not None and self._cmd_task_id == 0:
+            rew = (float(rew) - walk_cfg[0]) / (walk_cfg[1] ** 0.5 + 1e-8)
+        elif hop_cfg is not None and self._cmd_task_id == 1:
+            rew = (float(rew) - hop_cfg[0]) / (hop_cfg[1] ** 0.5 + 1e-8)
 
         # prefix all reward terms for logging
         task_suffix = "W" if self._cmd_task_id == 0 else "H"
-        info["reward_terms"] = {f"{k}_{task_suffix}": v for k, v in info["reward_terms"].items()}
-        info["reward_raw"] = {f"{k}_{task_suffix}": v for k, v in info["reward_raw"].items()}
-        info["reward_weights"] = {f"{k}_{task_suffix}": v for k, v in info["reward_weights"].items()}
+        info["reward_terms"] = {
+            f"{k}_{task_suffix}": v for k, v in info["reward_terms"].items()
+        }
+        info["reward_raw"] = {
+            f"{k}_{task_suffix}": v for k, v in info["reward_raw"].items()
+        }
+        info["reward_weights"] = {
+            f"{k}_{task_suffix}": v for k, v in info["reward_weights"].items()
+        }
+        info["task"] = self._cmd_task_id
+        info["task_reward_raw"] = task_rew_raw
 
         # update jerk + accel tracking state
         post_vel_x = env.hull.linearVelocity.x
@@ -173,7 +199,7 @@ class RlFTEnv(ProprioObsWrapper):
                 self._cmd_vel_target = np.random.uniform(*self._vel_sample_range)
             else:
                 self._cmd_vel_target = 0.0
-                
+
         # push the target command to the buf
         self._cmd_vel_buf.append(self._cmd_vel_target)
         if len(self._cmd_vel_buf) > self._max_vel_buf_size:
@@ -191,16 +217,14 @@ class RlFTEnv(ProprioObsWrapper):
 
         # augment base_obs to include task + cmd velocity
         obs = self._derive_full_obs(base_obs, self._cmd_vel, self._cmd_task_id)
-        
+
         return obs, rew, term, trunc, info
 
     def _draw_velocity_arrows(self, env):
         unwrapped: Any = self.unwrapped
         real_vel_x: float = unwrapped.hull.linearVelocity.x
-        
-        def _draw_arrow(
-            env, vel_x: float, color: tuple, y_offset: int = 0
-        ):
+
+        def _draw_arrow(env, vel_x: float, color: tuple, y_offset: int = 0):
             SCALE = 30.0
             VIEWPORT_H = 400
             ARROW_SCALE = 2
@@ -235,16 +259,14 @@ class RlFTEnv(ProprioObsWrapper):
             pygame.draw.polygon(env.surf, color, [p1, p2, p3])
 
         # green = command
-        _draw_arrow(
-            env, self._cmd_vel, color=(9, 176, 12), y_offset=-10
-        )
+        _draw_arrow(env, self._cmd_vel, color=(9, 176, 12), y_offset=-10)
         # blue = real
         _draw_arrow(env, real_vel_x, color=(71, 126, 255))
 
     def _draw_task_info(self, env):
         unwrapped: Any = self.unwrapped
         real_vel_x: float = unwrapped.hull.linearVelocity.x
-        
+
         SCALE = 30.0
         MARGIN = 10.0
 
@@ -258,7 +280,7 @@ class RlFTEnv(ProprioObsWrapper):
             task_name = "walk forward" if self._cmd_task_id == 0 else "hop forward"
         else:
             task_name = "walk backward" if self._cmd_task_id == 0 else "hop backward"
-            
+
         lines = [
             f"task:  {task_name}",
             f"cmd_x_vel: {self._cmd_vel:+.2f}",
@@ -286,19 +308,19 @@ class RlFTEnv(ProprioObsWrapper):
         return np.transpose(
             np.array(pygame.surfarray.pixels3d(env.surf)), axes=(1, 0, 2)
         )[:, -600:]
-        
+
     def reset(self, *, seed=None, options=None) -> tuple[Any, dict[str, Any]]:
         self._step_count = 0
         self._prev_vel_x = 0.0
         self._prev_vel_y = 0.0
         self._prev_accel_x = 0.0
         self._prev_accel_y = 0.0
-        
+
         self._last_leg_contact = -1
         self._last_obs_8 = 0.0
         self._last_obs_13 = 0.0
         self._steps_since_hop = 0
-        
+
         obs, info = super().reset(seed=seed, options=options)
 
         # change command velocity
@@ -306,6 +328,9 @@ class RlFTEnv(ProprioObsWrapper):
             self._cmd_vel = np.random.uniform(*self._vel_sample_range)
         else:
             self._cmd_vel = 0.0
+        # resample task
+        self._cmd_task_id = np.random.choice([0, 1])
+        info["task"] = self._cmd_task_id  # set info
 
         self._cmd_vel_target = self._cmd_vel  # reset target
         self._cmd_vel_buf = [self._cmd_vel]  # reset buffer

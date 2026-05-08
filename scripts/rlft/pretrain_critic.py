@@ -40,9 +40,24 @@ if not os.path.exists(LOGS_DIR):
 
 # =========================================
 
-MODEL_SIZE = "l"
+MODEL_SIZE = "xs"
+SUFFIX = ""
+SUFFIX = "1"
+
+_MODEL_CONFIGS = {
+    "xs":   [128, 64, 32],
+    "s":    [192, 96, 48],
+    "m":    [256, 128, 64],
+    "ml":   [320, 160, 80],
+    "l":    [384, 192, 96],
+    "xl":   [512, 256, 128],
+    "xll":  [768, 384, 192],
+    "xlll": [1024, 512, 256],
+}
+
+HIDDEN_LAYER = _MODEL_CONFIGS[MODEL_SIZE]
 DISTILLED_STUDENT = f"distill/{MODEL_SIZE}/best.pt"
-EXPERIMENT_NAME = "rlft/pretrain/{MODEL_SIZE}"
+EXPERIMENT_NAME = f"rlft/pretrain/{MODEL_SIZE}{SUFFIX}"
 TIMESTEPS = 100 * 1024 * 14  # pretraining needs a lot less timesteps
 
 # =========================================
@@ -128,7 +143,7 @@ def main():
     model = PPO(
         RlFTPolicy,
         env=train_env,
-        policy_kwargs=dict(hidden_dims=[320, 160, 80], activation_fn=torch.nn.ELU),
+        policy_kwargs=dict(hidden_dims=HIDDEN_LAYER, activation_fn=torch.nn.ELU),
         learning_rate=1e-3,
         n_epochs=10,
         n_steps=1024,
@@ -136,7 +151,6 @@ def main():
         ent_coef=0,
         vf_coef=1.0  # fine cuz we froze actor
     )
-    # model.set_env(train_env)
 
     # load in actor weights and freeze them
     print(f"[{(time.time() - wall_clk_start):.2f}s] Preloading policy...")
