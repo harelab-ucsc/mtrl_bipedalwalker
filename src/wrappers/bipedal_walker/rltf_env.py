@@ -25,7 +25,7 @@ class RlFTEnv(ProprioObsWrapper):
         ep_time: int = 20,
         vel_switching_freq: float = 3,
         task_switching_freq: float = 6,
-        vel_interp_speed: float = 0.5,
+        vel_interp_speed: float = 5.0,
         vel_sample_range: tuple[float, float] = (-5.0, 5.0),
         vel_sample_zero: float = 0.2,
         hull_x_range: tuple[float, float] = (20.0, 60.0),
@@ -60,10 +60,7 @@ class RlFTEnv(ProprioObsWrapper):
         # velocity and task commands
         self._cmd_vel: float = 0
         self._cmd_vel_target: float = 0
-        self._cmd_vel_buf: list[float] = [0]  # smooth out transitions
-        self._max_vel_buf_size: int = np.floor(
-            vel_interp_speed * FPS
-        )  # smooth out transitions
+        self._vel_interp_step: float = vel_interp_speed / FPS
         self._cmd_task_id: int = 0  # 0 = walk, 1 = hop
         
         # reward landscape correction terms
@@ -200,13 +197,8 @@ class RlFTEnv(ProprioObsWrapper):
             else:
                 self._cmd_vel_target = 0.0
 
-        # push the target command to the buf
-        self._cmd_vel_buf.append(self._cmd_vel_target)
-        if len(self._cmd_vel_buf) > self._max_vel_buf_size:
-            # trim front
-            self._cmd_vel_buf.pop(0)
-        # update cmd vel
-        self._cmd_vel = float(np.mean(self._cmd_vel_buf))
+        delta = self._cmd_vel_target - self._cmd_vel
+        self._cmd_vel += float(np.clip(delta, -self._vel_interp_step, self._vel_interp_step))
 
         # resample task if specified
         if (
@@ -333,7 +325,6 @@ class RlFTEnv(ProprioObsWrapper):
         info["task"] = self._cmd_task_id  # set info
 
         self._cmd_vel_target = self._cmd_vel  # reset target
-        self._cmd_vel_buf = [self._cmd_vel]  # reset buffer
 
         env: Any = self.unwrapped
         hull = env.hull

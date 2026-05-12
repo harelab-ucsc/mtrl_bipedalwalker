@@ -22,7 +22,18 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 # EXPERIMENT_NAME = "rlft/finetuned/ml_1-16_09_36-2026_05_05"
 # EXPERIMENT_NAME = "rlft/finetuned/ml_2_g95-02_20_25-2026_05_07"
 # EXPERIMENT_NAME = "rlft/finetuned/ml_3.1_g99-17_38_43-2026_05_07"
-EXPERIMENT_NAME = "rlft/finetuned/ml_3.2_g99-17_57_41-2026_05_07"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2_g99-17_57_41-2026_05_07"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.1_g99-18_32_27-2026_05_07"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.2_g99-20_41_51-2026_05_07"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.3_g95-13_26_23-2026_05_08"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.4_g95-13_48_36-2026_05_08"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.5_g97-15_00_01-2026_05_08"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.6_g97-15_21_59-2026_05_08"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.7_g97-15_52_42-2026_05_08"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.8_g97-19_04_21-2026_05_08"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.1_g97-15_16_22-2026_05_11"
+EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.1a_g97-15_16_31-2026_05_11"
+# EXPERIMENT_NAME = "rlft/finetuned/xl_3.2.8a_g97-19_04_25-2026_05_08"
 MODEL_CHECKPOINT = "best/best_model"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
@@ -51,8 +62,9 @@ def main():
 
     wrap_env = RlFTEnv(
         env,
-        vel_interp_speed=1.0,
-        task_switching_freq=6
+        vel_switching_freq=3,
+        task_switching_freq=6,
+        vel_interp_speed=3.0,
     )
     # wrap_env = env
     if PLOT_MODE == "obs":

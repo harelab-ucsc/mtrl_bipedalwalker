@@ -95,10 +95,10 @@ def main():
     def configureEnv(e: DistillEnv, task_id: int):
         if task_id == 0 or task_id == 2:  # walk / hop forward
             x_range = (0.0, 40.0)
-            vel_range = (0.0, 5.0)
+            vel_range = (-5.0, 5.0)
         else:  # walk / hop backward
             x_range = (40.0, 80.0)
-            vel_range = (-5.0, 0.0)
+            vel_range = (-5.0, 5.0)
         e.set_task(task_id)
         e.config_hull_reset(x_range=x_range, y_range=(0.2, 0.3))
         e.config_cmd_vel(sample_range=vel_range, interp_time=1, switch_time=3)

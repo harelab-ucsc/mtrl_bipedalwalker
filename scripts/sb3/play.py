@@ -46,7 +46,7 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 # MODEL_CHECKPOINT = "best/best_model"
 
 EXPERIMENT_NAME = "experts"
-MODEL_CHECKPOINT = "walk_forward"
+MODEL_CHECKPOINT = "walk_backward"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)
@@ -73,9 +73,10 @@ def main():
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
     wrap_env = ProprioObsWrapper(
-        RlFTEnv(
+        WalkEnv(
             env,
-            ep_time=7
+            ep_time=7,
+            vel_sample_range=(-5, 0)
         )
     )
     # wrap_env = env

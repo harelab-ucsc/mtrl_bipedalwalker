@@ -41,21 +41,21 @@ if not os.path.exists(LOGS_DIR):
 
 # --- model & experiment identity ---
 MODEL_SIZE  = "ml"
-CRITIC_SIZE = "xlll"
+CRITIC_SIZE = "xxxl"
 
 # Run controls
 PRETRAIN_FROM_SCRATCH  = True
 RUN_FINETUNE           = True
 STANDARDIZE_LANDSCAPES = True
 
-GAMMA  = 0.99
+GAMMA  = 0.975
 LAMBDA = 0.95
 
 # --- paths ---
 DISTILLED_STUDENT        = f"distill/{MODEL_SIZE}/best.pt"
-PRETRAIN_MODEL_SUFFIX    = "_3.2"
+PRETRAIN_MODEL_SUFFIX    = "_3.3.1a"
 PRETRAIN_EXPERIMENT_NAME = f"rlft/pretrain/{MODEL_SIZE}{PRETRAIN_MODEL_SUFFIX}_g{int(GAMMA * 100):02d}"
-FINETUNE_MODEL_SUFFIX    = "_3.2"
+FINETUNE_MODEL_SUFFIX    = "_3.3.1a"
 FINETUNE_EXPERIMENT_NAME = (
     f"rlft/finetuned/{MODEL_SIZE}{FINETUNE_MODEL_SUFFIX}"
     f"_g{int(GAMMA * 100):02d}"
@@ -71,12 +71,14 @@ LANDSCAPE_SAVE_PATH: Path             = MODELS_DIR / f"distill/{MODEL_SIZE}/land
 LANDSCAPE_JSON_PATH: Optional[Path]   = LANDSCAPE_SAVE_PATH
 
 # --- environment ---
-N_TRAIN_ENVS     = 14
-N_EVAL_ENVS      = 5
-EP_TIME          = 10
-VEL_SAMPLE_RANGE = (0, 5)
-VEL_SAMPLE_ZERO  = 0.2
-VEL_INTERP_SPEED = 1.0
+N_TRAIN_ENVS        = 14
+N_EVAL_ENVS         = 5
+EP_TIME             = 10
+VEL_SAMPLE_RANGE    = (-5, 5)
+VEL_SAMPLE_ZERO     = 0.15
+VEL_SWITCHING_FREQ  = 2
+TASK_SWITCHING_FREQ = 5
+VEL_INTERP_SPEED    = 4.0
 
 # --- data collection hyperparams ---
 N_COLLECT_ENVS        = 14 * 4
@@ -90,19 +92,19 @@ PRETRAIN_N_STEPS      = 1024
 PRETRAIN_BATCH_SIZE   = 512
 PRETRAIN_ENT_COEF     = 0.0
 PRETRAIN_VF_COEF      = 1.0
-PRETRAIN_INIT_LOG_STD = np.log(0.025)
+PRETRAIN_INIT_LOG_STD = np.log(0.1)
 
 # --- finetuning hyperparams ---
 FINETUNE_TIMESTEPS      = 200 * 1024 * N_TRAIN_ENVS
-FINETUNE_LR_START       = 3e-5
-FINETUNE_LR_END         = 5e-6
-FINETUNE_LR_FRACTION    = 0.8
+FINETUNE_LR_START       = 2e-5
+FINETUNE_LR_END         = 8e-6
+FINETUNE_LR_FRACTION    = 0.5
 FINETUNE_N_EPOCHS       = 25
 FINETUNE_N_STEPS        = 1024
 FINETUNE_BATCH_SIZE     = 64
-FINETUNE_ENT_COEF       = 0.002
+FINETUNE_ENT_COEF       = 0.006
 FINETUNE_CLIP_RANGE     = 0.1
-FINETUNE_INIT_LOG_STD   = np.log(0.25)
+FINETUNE_INIT_LOG_STD   = np.log(1.0)
 
 # =========================================
 
@@ -115,7 +117,9 @@ def make_env(landscape_config: Optional[LandscapeConfig] = None):
             ep_time=EP_TIME,
             vel_sample_range=VEL_SAMPLE_RANGE,
             vel_sample_zero=VEL_SAMPLE_ZERO,
+            vel_switching_freq=VEL_SWITCHING_FREQ,
             vel_interp_speed=VEL_INTERP_SPEED,
+            task_switching_freq=TASK_SWITCHING_FREQ,
             landscape_correction=landscape_config or {},
         )
     )
