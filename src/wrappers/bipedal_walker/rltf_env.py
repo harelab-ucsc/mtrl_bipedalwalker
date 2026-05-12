@@ -29,6 +29,7 @@ class RlFTEnv(ProprioObsWrapper):
         vel_sample_range: tuple[float, float] = (-5.0, 5.0),
         vel_sample_zero: float = 0.2,
         hull_x_range: tuple[float, float] = (20.0, 60.0),
+        manual_ctrl_mode: bool = False,
         landscape_correction: LandscapeConfig = {},  # set initial mean / variance corrections for each reward landscape
     ):
         """
@@ -77,7 +78,7 @@ class RlFTEnv(ProprioObsWrapper):
         self._last_obs_8 = 0.0
         self._last_obs_13 = 0.0
         self._steps_since_hop = 0
-
+        
         # configure observation space to fit the new cmds
         base = self.observation_space
         self.observation_space = spaces.Box(
@@ -85,6 +86,8 @@ class RlFTEnv(ProprioObsWrapper):
             high=np.concatenate([base.high, [np.inf, 1.0, 1.0]]),  # type: ignore
             dtype=np.float64,
         )
+        
+        self.manual_ctrl_mode = manual_ctrl_mode
         
     def apply_landscape_correction(self, landscape: Landscapes, mean: float, var: float):
         self._landscape_correction[landscape] = (mean, var)
@@ -189,7 +192,8 @@ class RlFTEnv(ProprioObsWrapper):
 
         # resample command velocity if specified
         if (
-            self._vel_switch_steps < self._max_steps
+            not self.manual_ctrl_mode
+            and self._vel_switch_steps < self._max_steps
             and self._step_count % self._vel_switch_steps == 0
         ):
             if np.random.random() > self._vel_sample_zero:
@@ -202,7 +206,8 @@ class RlFTEnv(ProprioObsWrapper):
 
         # resample task if specified
         if (
-            self._task_switch_steps < self._max_steps
+            not self.manual_ctrl_mode
+            and self._task_switch_steps < self._max_steps
             and self._step_count % self._task_switch_steps == 0
         ):
             self._cmd_task_id = np.random.choice([0, 1])
@@ -316,13 +321,15 @@ class RlFTEnv(ProprioObsWrapper):
         obs, info = super().reset(seed=seed, options=options)
 
         # change command velocity
-        if np.random.random() > self._vel_sample_zero:
+        if (not self.manual_ctrl_mode
+            and np.random.random() > self._vel_sample_zero):
             self._cmd_vel = np.random.uniform(*self._vel_sample_range)
         else:
             self._cmd_vel = 0.0
         # resample task
-        self._cmd_task_id = np.random.choice([0, 1])
-        info["task"] = self._cmd_task_id  # set info
+        if not self.manual_ctrl_mode:
+            self._cmd_task_id = np.random.choice([0, 1])
+            info["task"] = self._cmd_task_id  # set info
 
         self._cmd_vel_target = self._cmd_vel  # reset target
 

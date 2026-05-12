@@ -31,61 +31,84 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 # EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.6_g97-15_21_59-2026_05_08"
 # EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.7_g97-15_52_42-2026_05_08"
 # EXPERIMENT_NAME = "rlft/finetuned/ml_3.2.8_g97-19_04_21-2026_05_08"
-# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.1_g97-15_16_22-2026_05_11"
-EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.1a_g97-15_16_31-2026_05_11"
 # EXPERIMENT_NAME = "rlft/finetuned/xl_3.2.8a_g97-19_04_25-2026_05_08"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.1_g97-15_16_22-2026_05_11"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.1a_g97-15_16_31-2026_05_11"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.2_g97-01_08_13-2026_05_12"
+EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12"
 MODEL_CHECKPOINT = "best/best_model"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)
 PLOT_MODE: str | None = None
 
+MANUAL_CTRL = True  # turn on for arrow key ctrl
+FPS = 50
+VEL_KEY_SPEED = 5.0  # m/s per second; rate of target change and interpolation speed
+
 # =========================================
 
 _sim_paused = False
 _sim_step = False
 _sim_res = False
+_left_held = False
+_right_held = False
+_vel_to_zero = False
+_task_set = -1  # -1 = no change, 0 = walk, 1 = hop
 
 
 def main():
     global _sim_paused, _sim_step, _sim_res
+    global _left_held, _right_held, _vel_to_zero, _task_set
 
     # start key listeners
-    listener = keyboard.Listener(on_press=on_press)
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()  # start to listen on a separate thread
 
     print(f'=== Starting experiment "{EXPERIMENT_NAME}" ===')
+    if MANUAL_CTRL:
+        print("Controls: r=reset, w=walk, h=hop, left/right=velocity, down=stop, space=pause, s=step, q=quit")
 
     # load env
     print("Loading environments...")
-    env = make("BipedalWalker-v3", render_mode="rgb_array")
+    raw = make("BipedalWalker-v3", render_mode="rgb_array")
 
-    wrap_env = RlFTEnv(
-        env,
+    rlft_env = RlFTEnv(
+        raw,
         vel_switching_freq=3,
         task_switching_freq=6,
-        vel_interp_speed=3.0,
+        vel_interp_speed=VEL_KEY_SPEED if MANUAL_CTRL else 3.0,
+        manual_ctrl_mode=MANUAL_CTRL,
     )
-    # wrap_env = env
+    wrap_env = rlft_env
     if PLOT_MODE == "obs":
-        wrap_env = Plotter(wrap_env)
+        wrap_env = Plotter(rlft_env)
     elif PLOT_MODE == "reward":
-        wrap_env = RewardPlotter(wrap_env)
+        wrap_env = RewardPlotter(rlft_env)
 
     pygame.init()
     screen = pygame.display.set_mode((600, 400))
     clock = pygame.time.Clock()
-
-    obs, _ = wrap_env.reset()
-
-    # wrap_env.action_space.seed(SEED)
 
     # load model
     print(f'Loading model "{MODEL_CHECKPOINT}"...')
     model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"
     model = PPO.load(model_path, env=wrap_env, device="cpu")
 
+    cmd_vel_target = 0.0
+    task_id = 0
     total_rewards = 0
+
+    def do_reset():
+        obs, _ = wrap_env.reset()
+        if MANUAL_CTRL:
+            rlft_env._cmd_vel = cmd_vel_target
+            rlft_env._cmd_vel_target = cmd_vel_target
+            rlft_env._cmd_task_id = task_id
+            obs = rlft_env._derive_full_obs(obs[:-3], cmd_vel_target, task_id)
+        return obs
+
+    obs = do_reset()
 
     # manually render
     def render():
@@ -95,10 +118,25 @@ def main():
             screen.blit(surf, (0, 0))
             pygame.display.flip()
 
-        clock.tick(50)
+        clock.tick(FPS)
 
     while 1:
         pygame.event.pump()  # keep window alive on pause
+
+        if MANUAL_CTRL:
+            if _right_held:
+                cmd_vel_target = min(cmd_vel_target + VEL_KEY_SPEED / FPS, 5.0)
+            if _left_held:
+                cmd_vel_target = max(cmd_vel_target - VEL_KEY_SPEED / FPS, -5.0)
+            if _vel_to_zero:
+                cmd_vel_target = 0.0
+                _vel_to_zero = False
+            rlft_env._cmd_vel_target = cmd_vel_target
+
+            if _task_set != -1:
+                task_id = _task_set
+                _task_set = -1
+                rlft_env._cmd_task_id = task_id
 
         if _sim_res:
             # print out total rewards before resetting
@@ -106,7 +144,7 @@ def main():
             total_rewards = 0
 
             _sim_res = False
-            obs, _ = wrap_env.reset()
+            obs = do_reset()
             render()
             continue
 
@@ -124,12 +162,13 @@ def main():
 
         render()
 
-        if term or trunc:
+        if term or (not MANUAL_CTRL and trunc):
             _sim_res = True
 
 
 def on_press(key: Key | KeyCode | None) -> None:
     global _sim_paused, _sim_step, _sim_res
+    global _left_held, _right_held, _vel_to_zero, _task_set
 
     if isinstance(key, KeyCode):
         k = key.char
@@ -145,9 +184,31 @@ def on_press(key: Key | KeyCode | None) -> None:
         _sim_step = True
     elif k == "r":
         _sim_res = True
+    elif k == "left":
+        _left_held = True
+    elif k == "right":
+        _right_held = True
+    elif k == "down":
+        _vel_to_zero = True
+    elif k == "w":
+        _task_set = 0
+        print("Task: walk")
+    elif k == "h":
+        _task_set = 1
+        print("Task: hop")
     elif k == "q":
         print("Exiting...")
         os._exit(0)
+
+
+def on_release(key: Key | KeyCode | None) -> None:
+    global _left_held, _right_held
+
+    if isinstance(key, Key):
+        if key.name == "left":
+            _left_held = False
+        elif key.name == "right":
+            _right_held = False
 
 
 if __name__ == "__main__":

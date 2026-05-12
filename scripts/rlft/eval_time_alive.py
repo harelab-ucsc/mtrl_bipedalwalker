@@ -1,4 +1,6 @@
 import multiprocessing as mp
+import subprocess
+import time
 import warnings
 from collections import Counter
 
@@ -9,12 +11,13 @@ from stable_baselines3 import PPO
 from tqdm import tqdm
 
 from utils.paths import MODELS_DIR
+from utils.logging import fmt_duration
 from wrappers.bipedal_walker.rltf_env import RlFTEnv
 from mdp.bipedal_walker.hybrid import HybridModel
 
 T_EVAL        = 5_000_000  # total env-steps per agent
 UPDATE_INTERVAL = 1_000    # env-steps between progress-queue sends
-TOTAL_THREADS = 50         # total parallel workers spread across all agents
+TOTAL_THREADS = 14*4         # total parallel workers spread across all agents
 
 # cmd_vel (obs[14]) is the raw velocity command in m/s from vel_sample_range=(-5, 5).
 # It is NOT normalized. This threshold separates slow/stopped from directional motion.
@@ -25,6 +28,13 @@ VEL_DIR_THRESH = 0.5  # m/s
 # agent_type "hybrid" → oracle router between the 4 expert PPO models (path unused)
 AGENTS: list[tuple[str, str, str]] = [
     # --- Finetuned models ---
+    ("xl_3.3.3a_g97", "rlft/finetuned/xl_3.3.3a_g97-03_31_53-2026_05_12/best/best_model", "ppo"),
+    ("xl_3.3.3_g97",  "rlft/finetuned/xl_3.3.3_g97-03_31_47-2026_05_12/best/best_model",  "ppo"),
+    ("ml_3.3.3a_g97", "rlft/finetuned/ml_3.3.3a_g97-03_31_39-2026_05_12/best/best_model", "ppo"),
+    ("ml_3.3.3_g97",  "rlft/finetuned/ml_3.3.3_g97-03_31_34-2026_05_12/best/best_model",  "ppo"),
+    
+    ("ml_3.3.2a_g97", "rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12/best/best_model", "ppo"),
+    ("ml_3.3.2_g97",  "rlft/finetuned/ml_3.3.2_g97-01_08_13-2026_05_12/best/best_model",  "ppo"),
     ("ml_3.3.1a_g97", "rlft/finetuned/ml_3.3.1a_g97-15_16_31-2026_05_11/best/best_model", "ppo"),
     ("ml_3.3.1_g97",  "rlft/finetuned/ml_3.3.1_g97-15_16_22-2026_05_11/best/best_model",  "ppo"),
     ("ml_3.2.8_g97",  "rlft/finetuned/ml_3.2.8_g97-19_04_21-2026_05_08/best/best_model",  "ppo"),
@@ -52,8 +62,6 @@ AGENTS: list[tuple[str, str, str]] = [
 
 
 def _vel_dir(cmd_vel: float) -> str:
-    # cmd_vel is obs[14]: raw m/s command from RlFTEnv, range (-5, 5), NOT normalized.
-    # VEL_DIR_THRESH=0.5 m/s separates slow/stopped commands from directional ones.
     if cmd_vel > VEL_DIR_THRESH:
         return "fwd"
     if cmd_vel < -VEL_DIR_THRESH:
@@ -102,11 +110,11 @@ def _eval_agent_worker(name: str, model_path: str, agent_type: str, n_steps: int
     failure_modes: list[tuple[str, str | None]] = []
 
     obs, info = env.reset()
-    seg_label: str       = _seg_label(info["task"], float(obs[14]))
+    seg_label: str = _seg_label(info["task"], float(obs[14]))
     prev_label: str | None = None
-    alive     = 0
+    alive = 0
     seg_count = 0
-    done      = False
+    done = False
     last_sent = 0
 
     for step in range(n_steps):
@@ -199,6 +207,9 @@ def _aggregate_results(partials: list[dict]) -> dict:
 
 
 def main():
+    t0 = time.time()
+
+    print(f"[{time.time() - t0:.2f}s] Resolving agents...")
     agents = [(n, p, t) for n, p, t in AGENTS
               if t == "hybrid" or (MODELS_DIR / p).with_suffix(".zip").exists()]
 
@@ -207,8 +218,7 @@ def main():
 
     # Distribute TOTAL_THREADS workers across agents as evenly as possible.
     # Each agent always gets at least 1 worker; extra slots are distributed
-    # round-robin. Each worker runs its own single env (no SubprocVecEnv),
-    # avoiding nested-multiprocessing deadlocks.
+    # round-robin. Each worker runs its own single env.
     base_workers = max(1, TOTAL_THREADS // n_agents)
     extra        = max(0, TOTAL_THREADS - base_workers * n_agents)
 
@@ -224,6 +234,9 @@ def main():
             tasks.append((name, path, atype, steps))
 
     n_pool_workers = sum(workers_per_agent.values())
+
+    workers_summary = ", ".join(f"{n}×{workers_per_agent[n]}" for n, _, _ in agents)
+    print(f"[{time.time() - t0:.2f}s] Dispatching {len(tasks)} tasks across {n_pool_workers} workers  ({workers_summary})")
 
     with mp.Manager() as manager:
         q = manager.Queue()
@@ -251,8 +264,20 @@ def main():
                             results[name] = _aggregate_results(partial_results[name])
                             completed += 1
                             pbar.set_postfix(done=f"{completed}/{n_agents} agents")
+                            tqdm.write(f"[{time.time() - t0:.2f}s] Agent done: {name}  "
+                                       f"(avg_alive={results[name]['avg_alive']:.1f})")
 
             pool.join()
+
+    duration = fmt_duration(time.time() - t0)
+    print(f"[{time.time() - t0:.2f}s] Eval complete. Total time: {duration}")
+    subprocess.run(
+        [
+            "osascript", "-e",
+            f'display notification "Finished in {duration}" with title "Eval complete"',
+        ],
+        check=False,
+    )
 
     rows = sorted(
         [(name, results[name]) for name, _, _ in agents if name in results],

@@ -48,14 +48,14 @@ PRETRAIN_FROM_SCRATCH  = True
 RUN_FINETUNE           = True
 STANDARDIZE_LANDSCAPES = True
 
-GAMMA  = 0.975
+GAMMA  = 0.95
 LAMBDA = 0.95
 
 # --- paths ---
 DISTILLED_STUDENT        = f"distill/{MODEL_SIZE}/best.pt"
-PRETRAIN_MODEL_SUFFIX    = "_3.3.1a"
+PRETRAIN_MODEL_SUFFIX    = "_3.3.4a"
 PRETRAIN_EXPERIMENT_NAME = f"rlft/pretrain/{MODEL_SIZE}{PRETRAIN_MODEL_SUFFIX}_g{int(GAMMA * 100):02d}"
-FINETUNE_MODEL_SUFFIX    = "_3.3.1a"
+FINETUNE_MODEL_SUFFIX    = "_3.3.4a"
 FINETUNE_EXPERIMENT_NAME = (
     f"rlft/finetuned/{MODEL_SIZE}{FINETUNE_MODEL_SUFFIX}"
     f"_g{int(GAMMA * 100):02d}"
@@ -73,12 +73,12 @@ LANDSCAPE_JSON_PATH: Optional[Path]   = LANDSCAPE_SAVE_PATH
 # --- environment ---
 N_TRAIN_ENVS        = 14
 N_EVAL_ENVS         = 5
-EP_TIME             = 10
+EP_TIME             = 15
 VEL_SAMPLE_RANGE    = (-5, 5)
 VEL_SAMPLE_ZERO     = 0.15
 VEL_SWITCHING_FREQ  = 2
 TASK_SWITCHING_FREQ = 5
-VEL_INTERP_SPEED    = 4.0
+VEL_INTERP_SPEED    = 6.0
 
 # --- data collection hyperparams ---
 N_COLLECT_ENVS        = 14 * 4
@@ -95,7 +95,7 @@ PRETRAIN_VF_COEF      = 1.0
 PRETRAIN_INIT_LOG_STD = np.log(0.1)
 
 # --- finetuning hyperparams ---
-FINETUNE_TIMESTEPS      = 200 * 1024 * N_TRAIN_ENVS
+FINETUNE_TIMESTEPS      = 400 * 1024 * N_TRAIN_ENVS
 FINETUNE_LR_START       = 2e-5
 FINETUNE_LR_END         = 8e-6
 FINETUNE_LR_FRACTION    = 0.5
@@ -153,6 +153,7 @@ def collect_landscape_data(t0: float) -> LandscapeConfig:
     student_sd: OrderedDict = torch.load(student_path, map_location="cpu", weights_only=False)["policy"]
     layer_idx = [int(k.split(".")[1]) for k in list(student_sd.keys())[::2]]
 
+    # load in layer weights and bias
     layers: list[torch.nn.Module] = []
     for i, idx in enumerate(layer_idx):
         w = student_sd[f"policy.{idx}.weight"]
@@ -176,6 +177,7 @@ def collect_landscape_data(t0: float) -> LandscapeConfig:
     pbar = tqdm(total=N_LANDSCAPE_STEPS * 2, unit="steps", desc="Collecting landscape")
     prev = 0
 
+    # collect all data
     with torch.no_grad():
         while len(walk_rew) < N_LANDSCAPE_STEPS or len(hop_rew) < N_LANDSCAPE_STEPS:
             obs_t   = torch.as_tensor(obs, dtype=torch.float32)
@@ -183,7 +185,7 @@ def collect_landscape_data(t0: float) -> LandscapeConfig:
             obs, _, _, infos = vec_env.step(actions)
 
             for i in range(N_COLLECT_ENVS):
-                task = infos[i]["task"]
+                task = infos[i]["task"]  # modular against different landscapes. But when applying correction, landscape keys must match.
                 r    = float(infos[i]["task_reward_raw"])
                 if task == 0 and len(walk_rew) < N_LANDSCAPE_STEPS:
                     walk_rew.append(r)
