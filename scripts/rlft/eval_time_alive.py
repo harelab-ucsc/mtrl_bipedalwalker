@@ -1,4 +1,3 @@
-import argparse
 import multiprocessing as mp
 import warnings
 from collections import Counter
@@ -7,16 +6,15 @@ import numpy as np
 import torch
 from gymnasium import make
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv
 from tqdm import tqdm
 
 from utils.paths import MODELS_DIR
 from wrappers.bipedal_walker.rltf_env import RlFTEnv
 from mdp.bipedal_walker.hybrid import HybridModel
 
-T_EVAL = 5_000_000       # total env-steps per agent
-UPDATE_INTERVAL = 1_000  # env-steps between progress-queue sends
-N_ENVS = 4               # parallel env instances per agent (override with --n-envs)
+T_EVAL        = 5_000_000  # total env-steps per agent
+UPDATE_INTERVAL = 1_000    # env-steps between progress-queue sends
+TOTAL_THREADS = 50         # total parallel workers spread across all agents
 
 # cmd_vel (obs[14]) is the raw velocity command in m/s from vel_sample_range=(-5, 5).
 # It is NOT normalized. This threshold separates slow/stopped from directional motion.
@@ -67,25 +65,20 @@ def _seg_label(task_id: int, cmd_vel: float) -> str:
     return f"{'walk' if task_id == 0 else 'hop'}_{_vel_dir(cmd_vel)}"
 
 
-def _make_env():
-    # Module-level so SubprocVecEnv can pickle it for subprocess workers.
-    return RlFTEnv(
-        make("BipedalWalker-v3", render_mode=None),
-        ep_time=20,
-        vel_switching_freq=3,
-        task_switching_freq=6,
-        vel_interp_speed=3.0,
-    )
-
-
-def _eval_agent(name: str, model_path: str, agent_type: str, q, n_envs: int) -> None:
+def _eval_agent_worker(name: str, model_path: str, agent_type: str, n_steps: int, q) -> None:
     warnings.filterwarnings(
         "ignore",
         message="__array_wrap__ must accept context and return_scalar arguments",
         category=DeprecationWarning,
     )
 
-    env = SubprocVecEnv([_make_env for _ in range(n_envs)])
+    env = RlFTEnv(
+        make("BipedalWalker-v3", render_mode=None),
+        ep_time=20,
+        vel_switching_freq=3,
+        task_switching_freq=6,
+        vel_interp_speed=3.0,
+    )
 
     if agent_type == "ppo":
         model = PPO.load(str(MODELS_DIR / model_path), env=env, device="cpu")
@@ -97,145 +90,152 @@ def _eval_agent(name: str, model_path: str, agent_type: str, q, n_envs: int) -> 
         hybrid = HybridModel()
 
         def predict(obs):
-            # obs shape: (n_envs, obs_dim) — loop since HybridModel expects single obs
-            return np.array([
-                hybrid.forward(torch.tensor(obs[i], dtype=torch.float32)).numpy()
-                for i in range(n_envs)
-            ])
+            return hybrid.forward(torch.tensor(obs, dtype=torch.float32)).numpy()
 
     time_alive:    list[float]                      = []
     seg_alive:     dict[str, list[float]]           = {}
     # failure_modes entries: (at_label, from_label | None)
     # Recorded only on true termination (fall), not on timeout truncation.
-    # at_label   = (task, direction) the agent was in when it fell,
-    #              e.g. "hop_bwd" = commanded to hop while going backward
+    # at_label   = (task, direction) the agent was in when it fell
     # from_label = (task, direction) before the most recent task/direction switch,
     #              or None if the agent never switched during this episode.
-    # Together these reveal transitions like "fell during hop_bwd right after
-    # switching from walk_fwd", pointing to instability at command transitions.
     failure_modes: list[tuple[str, str | None]] = []
 
-    # Per-env episode state.
-    # alive[i]     counts steps survived in current episode (incremented post non-done step).
-    # seg_count[i] counts steps in current command segment (same cadence as alive[i]).
-    alive     = np.zeros(n_envs, dtype=int)
-    seg_count = np.zeros(n_envs, dtype=int)
-
-    reset_result = env.reset()
-    obs: np.ndarray = np.asarray(reset_result[0] if isinstance(reset_result, tuple) else reset_result)
-
-    # obs[i][15] > 0.5 → walk (task 0); obs[i][14] = cmd_vel
-    seg_labels:  list[str]            = [_seg_label(0 if obs[i][15] > 0.5 else 1, float(obs[i][14])) for i in range(n_envs)]
-    prev_labels: list[str | None]     = [None] * n_envs
-
-    n_steps   = T_EVAL // n_envs
+    obs, info = env.reset()
+    seg_label: str       = _seg_label(info["task"], float(obs[14]))
+    prev_label: str | None = None
+    alive     = 0
+    seg_count = 0
+    done      = False
     last_sent = 0
 
     for step in range(n_steps):
-        actions = predict(obs)
-        # SubprocVecEnv auto-resets done envs; obs[i] after done is the new episode's first obs.
-        obs_raw, _, dones, infos = env.step(actions)
-        obs = np.asarray(obs_raw)
+        if done:
+            time_alive.append(alive)
+            obs, info = env.reset()
+            seg_label  = _seg_label(info["task"], float(obs[14]))
+            prev_label = None
+            alive      = 0
+            seg_count  = 0
+            done       = False
+        else:
+            alive     += 1
+            seg_count += 1
 
-        for i in range(n_envs):
-            done = bool(dones[i])
-            info = infos[i]
+        action = predict(obs)
+        obs, _, term, trunc, info = env.step(action)
+        done = term or trunc
 
-            if done:
-                # "TimeLimit.truncated" is True when the episode ended by timeout (trunc),
-                # absent or False when the hull hit the ground (term).
-                trunc = info.get("TimeLimit.truncated", False)
+        # Detect task or direction switch mid-episode.
+        # obs[14] = cmd_vel (m/s, post-switch value set by RlFTEnv.step).
+        # obs[15:17] = one-hot task embedding (walk→[1,0], hop→[0,1]).
+        task_id       = 0 if obs[15] > 0.5 else 1
+        current_label = _seg_label(task_id, float(obs[14]))
+        if current_label != seg_label:
+            seg_alive.setdefault(seg_label, []).append(seg_count)
+            prev_label = seg_label
+            seg_label  = current_label
+            seg_count  = 0
 
-                # +1: the step that caused done counts as a step survived.
-                time_alive.append(alive[i] + 1)
+        if term:
+            # Record failure mode on true falls only (term=True means hull hit ground;
+            # trunc=True means episode timed out — not a failure worth counting).
+            failure_modes.append((seg_label, prev_label))
 
-                if not trunc:
-                    failure_modes.append((seg_labels[i], prev_labels[i]))
+        if (step + 1) % UPDATE_INTERVAL == 0:
+            q.put(UPDATE_INTERVAL)
+            last_sent = step + 1
 
-                # obs[i] is already the reset obs for the new episode.
-                seg_labels[i]  = _seg_label(0 if obs[i][15] > 0.5 else 1, float(obs[i][14]))
-                prev_labels[i] = None
-                alive[i]       = 0
-                seg_count[i]   = 0
-            else:
-                alive[i]     += 1
-                seg_count[i] += 1
-
-                # obs[i] is the post-step obs. Detect task or direction switch mid-episode.
-                # obs[i][14] = cmd_vel (m/s, post-switch); obs[i][15:17] = one-hot task.
-                task_id       = 0 if obs[i][15] > 0.5 else 1
-                current_label = _seg_label(task_id, float(obs[i][14]))
-                if current_label != seg_labels[i]:
-                    seg_alive.setdefault(seg_labels[i], []).append(seg_count[i])
-                    prev_labels[i] = seg_labels[i]
-                    seg_labels[i]  = current_label
-                    seg_count[i]   = 0
-
-        total_steps = (step + 1) * n_envs
-        if total_steps - last_sent >= UPDATE_INTERVAL:
-            q.put(total_steps - last_sent)
-            last_sent = total_steps
-
-    remaining = n_steps * n_envs - last_sent
+    remaining = n_steps - last_sent
     if remaining > 0:
         q.put(remaining)
 
-    # Close open episodes and segments for each env.
-    for i in range(n_envs):
-        if alive[i] > 0:
-            time_alive.append(alive[i])
-        if seg_count[i] > 0:
-            seg_alive.setdefault(seg_labels[i], []).append(seg_count[i])
+    # Close the last open episode and segment
+    time_alive.append(alive)
+    if seg_count > 0:
+        seg_alive.setdefault(seg_label, []).append(seg_count)
 
     env.close()
 
-    avg_alive      = float(np.mean(time_alive)) if time_alive else 0.0
-    seg_avgs       = {lbl: float(np.mean(ts)) for lbl, ts in seg_alive.items() if ts}
+    q.put(("partial_result", name, {
+        "time_alive":    time_alive,
+        "seg_alive":     seg_alive,
+        "failure_modes": failure_modes,
+    }))
+
+
+def _aggregate_results(partials: list[dict]) -> dict:
+    all_time_alive:    list[float]                  = []
+    all_seg_alive:     dict[str, list[float]]       = {}
+    all_failure_modes: list[tuple[str, str | None]] = []
+
+    for p in partials:
+        all_time_alive.extend(p["time_alive"])
+        for lbl, times in p["seg_alive"].items():
+            all_seg_alive.setdefault(lbl, []).extend(times)
+        all_failure_modes.extend(p["failure_modes"])
+
+    avg_alive      = float(np.mean(all_time_alive)) if all_time_alive else 0.0
+    seg_avgs       = {lbl: float(np.mean(ts)) for lbl, ts in all_seg_alive.items() if ts}
     best_label     = max(seg_avgs, key=seg_avgs.__getitem__) if seg_avgs else "n/a"
     best_label_avg = seg_avgs.get(best_label, 0.0)
 
     top5: list[str] = []
-    if failure_modes:
-        counter = Counter(failure_modes)
-        total   = len(failure_modes)
+    if all_failure_modes:
+        counter = Counter(all_failure_modes)
+        total   = len(all_failure_modes)
         for (at, frm), cnt in counter.most_common(5):
             frm_str = frm if frm is not None else "—"
             top5.append(f"{at} ← {frm_str} ({cnt / total * 100:.0f}%)")
 
-    q.put(("result", name, {
+    return {
         "avg_alive":      avg_alive,
         "seg_avgs":       seg_avgs,
         "best_label":     best_label,
         "best_label_avg": best_label_avg,
         "top5_failures":  top5,
-        "n_falls":        len(failure_modes),
-    }))
+        "n_falls":        len(all_failure_modes),
+    }
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--n-envs", type=int, default=N_ENVS,
-        help=f"parallel env instances per agent (default: {N_ENVS})",
-    )
-    args   = parser.parse_args()
-    n_envs = args.n_envs
-
     agents = [(n, p, t) for n, p, t in AGENTS
               if t == "hybrid" or (MODELS_DIR / p).with_suffix(".zip").exists()]
 
     n_agents    = len(agents)
     total_steps = n_agents * T_EVAL
 
+    # Distribute TOTAL_THREADS workers across agents as evenly as possible.
+    # Each agent always gets at least 1 worker; extra slots are distributed
+    # round-robin. Each worker runs its own single env (no SubprocVecEnv),
+    # avoiding nested-multiprocessing deadlocks.
+    base_workers = max(1, TOTAL_THREADS // n_agents)
+    extra        = max(0, TOTAL_THREADS - base_workers * n_agents)
+
+    tasks: list[tuple[str, str, str, int]] = []
+    workers_per_agent: dict[str, int] = {}
+    for i, (name, path, atype) in enumerate(agents):
+        n_workers      = base_workers + (1 if i < extra else 0)
+        workers_per_agent[name] = n_workers
+        base_steps     = T_EVAL // n_workers
+        step_remainder = T_EVAL % n_workers
+        for j in range(n_workers):
+            steps = base_steps + (1 if j < step_remainder else 0)
+            tasks.append((name, path, atype, steps))
+
+    n_pool_workers = sum(workers_per_agent.values())
+
     with mp.Manager() as manager:
         q = manager.Queue()
 
-        with mp.Pool() as pool:
-            for name, path, atype in agents:
-                pool.apply_async(_eval_agent, args=(name, path, atype, q, n_envs))
+        with mp.Pool(processes=n_pool_workers) as pool:
+            for name, path, atype, steps in tasks:
+                pool.apply_async(_eval_agent_worker, args=(name, path, atype, steps, q))
             pool.close()
 
-            results: dict[str, dict] = {}
+            results:         dict[str, dict]       = {}
+            partial_results: dict[str, list[dict]] = {name: [] for name, _, _ in agents}
+            pending:         dict[str, int]        = dict(workers_per_agent)
             completed = 0
 
             with tqdm(total=total_steps, desc="Evaluating", unit="step", unit_scale=True) as pbar:
@@ -243,11 +243,14 @@ def main():
                     msg = q.get()
                     if isinstance(msg, int):
                         pbar.update(msg)
-                    else:
+                    elif msg[0] == "partial_result":
                         _, name, data = msg
-                        results[name] = data
-                        completed += 1
-                        pbar.set_postfix(done=f"{completed}/{n_agents} agents")
+                        partial_results[name].append(data)
+                        pending[name] -= 1
+                        if pending[name] == 0:
+                            results[name] = _aggregate_results(partial_results[name])
+                            completed += 1
+                            pbar.set_postfix(done=f"{completed}/{n_agents} agents")
 
             pool.join()
 
@@ -259,10 +262,11 @@ def main():
 
     agent_names = ", ".join(n for n, _, _ in agents)
     print(f"\nEval conditions:")
-    print(f"  agents:        {n_agents}  ({agent_names})")
-    print(f"  steps / agent: {T_EVAL:,}")
-    print(f"  n_envs:        {n_envs}")
-    print(f"  total steps:   {total_steps:,}")
+    print(f"  agents:          {n_agents}  ({agent_names})")
+    print(f"  steps / agent:   {T_EVAL:,}")
+    print(f"  total steps:     {total_steps:,}")
+    print(f"  total threads:   {TOTAL_THREADS}  "
+          f"({base_workers}–{base_workers + (1 if extra else 0)} workers/agent)")
 
     name_w    = max(len(n) for n, _ in rows)
     alive_w   = 10
