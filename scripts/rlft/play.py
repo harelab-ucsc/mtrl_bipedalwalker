@@ -35,7 +35,14 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 # EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.1_g97-15_16_22-2026_05_11"
 # EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.1a_g97-15_16_31-2026_05_11"
 # EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.2_g97-01_08_13-2026_05_12"
-EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.4_g97-14_11_25-2026_05_12"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.4a_g97-14_11_39-2026_05_12"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.4_g95-14_12_09-2026_05_12"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.4a_g95-14_12_26-2026_05_12"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.5_g97-22_25_13-2026_05_12"
+# EXPERIMENT_NAME = "rlft/finetuned/ml_3.3.5a_g97-22_27_26-2026_05_12"
+EXPERIMENT_NAME = "rlft/finetuned/ml_3.4.3_g97-02_54_26-2026_05_13"
 MODEL_CHECKPOINT = "best/best_model"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
@@ -75,9 +82,9 @@ def main():
 
     rlft_env = RlFTEnv(
         raw,
-        vel_switching_freq=3,
-        task_switching_freq=6,
-        vel_interp_speed=VEL_KEY_SPEED if MANUAL_CTRL else 3.0,
+        vel_switching_freq=2,
+        task_switching_freq=5,
+        vel_interp_speed=VEL_KEY_SPEED if MANUAL_CTRL else 30000.0,
         manual_ctrl_mode=MANUAL_CTRL,
     )
     wrap_env = rlft_env

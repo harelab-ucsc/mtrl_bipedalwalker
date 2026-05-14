@@ -28,13 +28,14 @@ from wrappers.bipedal_walker.hop_env import HopEnv
 from wrappers.bipedal_walker.hop_finetune_env import HopFTEnv
 from wrappers.bipedal_walker.walk_env import WalkEnv
 from wrappers.bipedal_walker.walk_finetune_env import WalkFTEnv
+from wrappers.bipedal_walker.body_tilt_env import BodyTiltEnv
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
 
-if not os.path.exists(LOGS_DIR):
-    os.makedirs(LOGS_DIR)
+if not os.path.exists(LOGS_DIR / "expert"):
+    os.makedirs(LOGS_DIR / "expert")
 
 # =========================================
 
@@ -43,13 +44,15 @@ if not os.path.exists(LOGS_DIR):
 # PRIOR_EXP_NAME = "hop_backward/hop_backward_2-20_35_48-2026_04_09"
 # PRIOR_EXP_NAME = "hop_forward/hop_forward_7-17_00_23-2026_04_09"
 # PRIOR_EXP_NAME = "walk_forward/walk_forward_9-00_50_10-2026_04_12"
-PRIOR_EXP_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
+# PRIOR_EXP_NAME = "walk_forward/walk_forward_10-15_47_52-2026_04_12"
+PRIOR_EXP_NAME = "body_tilt/1.1.1-16_46_44-2026_05_12"
 PRIOR_MODEL = "best/best_model"
 
-EXPERIMENT_NAME = "walk_forward/walk_forward_11_1" + datetime.today().strftime(
+# EXPERIMENT_NAME = "walk_forward/walk_forward_11_1" + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+EXPERIMENT_NAME = "body_tilt/1.1.1f" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
-TIMESTEPS = 400 * 1024 * 14
+TIMESTEPS = 200 * 1024 * 14
 
 # =========================================
 
@@ -57,20 +60,35 @@ TIMESTEPS = 400 * 1024 * 14
 def main():
     print("Loading environments...")
 
+    # def make_env():
+    #     env = gym.make("BipedalWalker-v3")
+    #     env = Monitor(
+    #         ProprioObsWrapper(
+    #             WalkFTEnv(
+    #                 env,
+    #                 ep_time=10,
+    #                 vel_sample_range=(0, 5),
+    #                 vel_sample_zero=0.2,
+    #                 vel_switching_freq=5,
+    #                 vel_interp_speed=0.3,
+    #             )
+    #         )
+    #     )
+    #     return env
+
     def make_env():
         env = gym.make("BipedalWalker-v3")
-        env = Monitor(
-            ProprioObsWrapper(
-                WalkFTEnv(
-                    env,
-                    ep_time=10,
-                    vel_sample_range=(0, 5),
-                    vel_sample_zero=0.2,
-                    vel_switching_freq=5,
-                    vel_interp_speed=0.3,
-                )
-            )
+        body_tilt = BodyTiltEnv(
+            env,
+            ep_time=10,
+            ang_sample_range=(-0.75, 0.75),
+            ang_sample_zero=0.05,
+            ang_switching_freq=1,
+            ang_interp_speed=0.3,
+            hull_x_range=(20.0, 60.0),
         )
+        body_tilt._difficulty = 1.0
+        env = Monitor(ProprioObsWrapper(body_tilt))
         return env
 
     train_env = SubprocVecEnv([make_env for _ in range(14)])
@@ -92,7 +110,7 @@ def main():
     model.set_env(train_env)
 
     # configure logger
-    model.set_logger(configure(str(LOGS_DIR / EXPERIMENT_NAME), ["tensorboard"]))
+    model.set_logger(configure(str(LOGS_DIR / "expert" / EXPERIMENT_NAME), ["tensorboard"]))
     train_env.reset()
 
     # define callbacks

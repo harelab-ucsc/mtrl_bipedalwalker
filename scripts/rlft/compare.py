@@ -15,8 +15,10 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # =========================================
 
 EXPERIMENTS = [
-    ("rlft/finetuned/ml_3.3.1_g97-15_16_22-2026_05_11", "3.3.1"),
-    ("rlft/finetuned/ml_3.3.1a_g97-15_16_31-2026_05_11", "3.3.1a"),
+    ("rlft/finetuned/ml_3.3.2_g97-01_08_13-2026_05_12", "3.3.2"),
+    # ("rlft/finetuned/ml_3.3.4_g97-14_11_25-2026_05_12", "3.3.4"),
+    # ("rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12", "3.3.2a"),
+    ("rlft/finetuned/ml_3.3.5a_g97-22_27_26-2026_05_12", "3.3.5a"),
 ]
 
 MODEL_CHECKPOINT = "best/best_model"

@@ -24,11 +24,12 @@ from pynput import keyboard as kb
 
 from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
-from wrappers.bipedal_walker.sit_env import SitEnv
+from mdp.bipedal_walker.curriculum import CurriculumCallback
 from wrappers.bipedal_walker.hop_env import HopEnv
 from wrappers.bipedal_walker.hop_finetune_env import HopFTEnv
 from wrappers.bipedal_walker.walk_env import WalkEnv
 from wrappers.bipedal_walker.walk_finetune_env import WalkFTEnv
+from wrappers.bipedal_walker.body_tilt_env import BodyTiltEnv
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 
 if not os.path.exists(MODELS_DIR):
@@ -39,10 +40,10 @@ if not os.path.exists(LOGS_DIR / "expert"):
 
 # =========================================
 
-EXPERIMENT_NAME = "walk_backward/walk_backward_7_4" + datetime.today().strftime(
+EXPERIMENT_NAME = "body_tilt/1.1.1" + datetime.today().strftime(
     "-%H_%M_%S-%Y_%m_%d"
 )
-TIMESTEPS = 400 * 1024 * 14
+TIMESTEPS = 200 * 1024 * 14
 
 # =========================================
 
@@ -54,13 +55,13 @@ def main():
         env = gym.make("BipedalWalker-v3")
         env = Monitor(
             ProprioObsWrapper(
-                WalkFTEnv(
+                BodyTiltEnv(
                     env,
                     ep_time=10,
-                    vel_sample_range=(-5, 0),
-                    vel_sample_zero=0.1,
-                    vel_switching_freq=5,
-                    vel_interp_speed=0.3,
+                    ang_sample_range=(-0.75, 0.75),
+                    ang_sample_zero=0.1,
+                    ang_switching_freq=3,
+                    ang_interp_speed=0.3,
                     hull_x_range=(40.0, 80.0),
                 )
             )
@@ -110,7 +111,7 @@ def main():
         total_timesteps=TIMESTEPS,
         reset_num_timesteps=False,
         callback=CallbackList(
-            [StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]
+            [StandardTBCallback(), RewardTermLogger(), CurriculumCallback(TIMESTEPS), eval_cb, ckpt_cb]
         ),
         progress_bar=True,
     )

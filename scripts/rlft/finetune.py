@@ -46,16 +46,16 @@ CRITIC_SIZE = "xxxl"
 # Run controls
 PRETRAIN_FROM_SCRATCH  = True
 RUN_FINETUNE           = True
-STANDARDIZE_LANDSCAPES = True
+STANDARDIZE_LANDSCAPES = False
 
-GAMMA  = 0.95
+GAMMA  = 0.975
 LAMBDA = 0.95
 
 # --- paths ---
 DISTILLED_STUDENT        = f"distill/{MODEL_SIZE}/best.pt"
-PRETRAIN_MODEL_SUFFIX    = "_3.3.4a"
+PRETRAIN_MODEL_SUFFIX    = "_3.4.4"
 PRETRAIN_EXPERIMENT_NAME = f"rlft/pretrain/{MODEL_SIZE}{PRETRAIN_MODEL_SUFFIX}_g{int(GAMMA * 100):02d}"
-FINETUNE_MODEL_SUFFIX    = "_3.3.4a"
+FINETUNE_MODEL_SUFFIX    = "_3.4.4"
 FINETUNE_EXPERIMENT_NAME = (
     f"rlft/finetuned/{MODEL_SIZE}{FINETUNE_MODEL_SUFFIX}"
     f"_g{int(GAMMA * 100):02d}"
@@ -73,29 +73,29 @@ LANDSCAPE_JSON_PATH: Optional[Path]   = LANDSCAPE_SAVE_PATH
 # --- environment ---
 N_TRAIN_ENVS        = 14
 N_EVAL_ENVS         = 5
-EP_TIME             = 15
+EP_TIME             = 10
 VEL_SAMPLE_RANGE    = (-5, 5)
 VEL_SAMPLE_ZERO     = 0.15
 VEL_SWITCHING_FREQ  = 2
 TASK_SWITCHING_FREQ = 5
-VEL_INTERP_SPEED    = 6.0
+VEL_INTERP_SPEED    = 10.0
 
 # --- data collection hyperparams ---
 N_COLLECT_ENVS        = 14 * 4
 N_LANDSCAPE_STEPS     = 1_000_000  # step rewards per task for mean/variance estimation
 
 # --- pretraining hyperparams ---
-PRETRAIN_TIMESTEPS    = 100 * 1024 * N_TRAIN_ENVS
+PRETRAIN_TIMESTEPS    = 200 * 1024 * N_TRAIN_ENVS
 PRETRAIN_LR           = 1e-3
 PRETRAIN_N_EPOCHS     = 10
 PRETRAIN_N_STEPS      = 1024
 PRETRAIN_BATCH_SIZE   = 512
 PRETRAIN_ENT_COEF     = 0.0
 PRETRAIN_VF_COEF      = 1.0
-PRETRAIN_INIT_LOG_STD = np.log(0.1)
+PRETRAIN_INIT_LOG_STD = np.log(0.7)
 
 # --- finetuning hyperparams ---
-FINETUNE_TIMESTEPS      = 400 * 1024 * N_TRAIN_ENVS
+FINETUNE_TIMESTEPS      = 200 * 1024 * N_TRAIN_ENVS
 FINETUNE_LR_START       = 2e-5
 FINETUNE_LR_END         = 8e-6
 FINETUNE_LR_FRACTION    = 0.5
@@ -319,7 +319,7 @@ def run_pretraining(t0: float, landscape_cfg: Optional[LandscapeConfig] = None) 
         verbose=0,
     )
     ckpt_cb = CheckpointCallback(
-        save_freq=max(100000 // N_TRAIN_ENVS, 1),
+        save_freq=max(500000 // N_TRAIN_ENVS, 1),
         save_path=f"{MODELS_DIR}/{PRETRAIN_EXPERIMENT_NAME}/",
     )
 
@@ -388,7 +388,7 @@ def run_finetuning(pretrained_path: Path, t0: float, landscape_cfg: Optional[Lan
         verbose=0,
     )
     ckpt_cb = CheckpointCallback(
-        save_freq=max(100000 // N_TRAIN_ENVS, 1),
+        save_freq=max(500000 // N_TRAIN_ENVS, 1),
         save_path=f"{MODELS_DIR}/{FINETUNE_EXPERIMENT_NAME}/",
     )
 

@@ -7,6 +7,7 @@ from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 
 from utils.paths import MODELS_DIR
+from wrappers.bipedal_walker.body_tilt_env import BodyTiltEnv
 from wrappers.plot_env import Plotter
 from wrappers.plot_reward_env import RewardPlotter
 from wrappers.bipedal_walker.hop_env import HopEnv
@@ -43,10 +44,14 @@ from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_4-00_07_13-2026_04_15"
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_5-00_16_04-2026_04_15"
 # EXPERIMENT_NAME = "walk_backward/walk_backward_7_6-00_22_45-2026_04_15"
+# EXPERIMENT_NAME = "body_tilt/1.0.0-15_24_21-2026_05_12"
+# EXPERIMENT_NAME = "body_tilt/1.1.0-16_25_42-2026_05_12"
+# EXPERIMENT_NAME = "body_tilt/1.1.1-16_46_44-2026_05_12"
+# EXPERIMENT_NAME = "body_tilt/1.1.1f-18_10_49-2026_05_12"
 # MODEL_CHECKPOINT = "best/best_model"
 
 EXPERIMENT_NAME = "experts"
-MODEL_CHECKPOINT = "walk_backward"
+MODEL_CHECKPOINT = "hop_backward"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)
@@ -72,14 +77,25 @@ def main():
     print("Loading environments...")
     env = make("BipedalWalker-v3", render_mode="rgb_array")
 
+    # wrap_env = ProprioObsWrapper(
+    #     BodyTiltEnv(
+    #         env,
+    #         ep_time=15,
+    #         ang_switching_freq=5,
+    #         ang_sample_range=(-0.75, 0.75),
+    #         ang_sample_zero=0.15,
+    #         ang_interp_speed=0.5,
+    #     )
+    # )
     wrap_env = ProprioObsWrapper(
-        WalkEnv(
+        HopEnv(
             env,
             ep_time=7,
-            vel_sample_range=(-5, 0)
+            vel_sample_range=(0, 0)
         )
     )
     # wrap_env = env
+    
     if PLOT_MODE == "obs":
         wrap_env = Plotter(wrap_env)
     elif PLOT_MODE == "reward":
@@ -89,6 +105,12 @@ def main():
     screen = pygame.display.set_mode((600, 400))
     clock = pygame.time.Clock()
 
+    e = wrap_env
+    while e is not None:
+        if isinstance(e, BodyTiltEnv):
+            e._difficulty = 0.3
+            break
+        e = getattr(e, "env", None)
     obs, _ = wrap_env.reset()
 
     # wrap_env.action_space.seed(SEED)

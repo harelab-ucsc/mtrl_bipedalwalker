@@ -25,16 +25,8 @@ from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import fmt_duration
 from wrappers.bipedal_walker.distill_env import DistillEnv
 from mdp.bipedal_walker.student import (
-    StudentModelXS,
-    StudentModelS,
-    StudentModelM,
-    StudentModelML,
-    StudentModelL,
-    StudentModelXL,
-    StudentModelXLL,
-    StudentModelXLLL,
-    StudentModel,
-    OBS_SIZE,
+    StudentModelMLV2,
+    OBS_SIZE_V2,
     ACT_SIZE,
 )
 
@@ -44,6 +36,7 @@ EXPERT_MODEL_PATHS = [
     "experts/walk_backward",
     "experts/hop_forward",
     "experts/hop_backward",
+    "experts/body_tilt",
 ]
 
 TASK_NAMES = [
@@ -51,9 +44,10 @@ TASK_NAMES = [
     "walk_backward",
     "hop_forward",
     "hop_backward",
+    "body_tilt",
 ]
 
-EXPERIMENT_NAME = "distill/xlll_4"
+EXPERIMENT_NAME = "distill_v2/ml.mix"
 # + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
 
 _sim_paused = False
@@ -79,13 +73,18 @@ def main():
     env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=7)
     eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10)
 
+    # configure tilt command once — body_tilt task uses this; locomotion tasks ignore it
+    # via their task one-hot bits (the V2 student learns which command is relevant per task)
+    env.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=10, interp_time=1, zero_prob=0.15)
+    eval_env.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=10, interp_time=1, zero_prob=0.15)
+
     # load  models
     print("Loading experts...")
     EXPERT_MODELS = [
         PPO.load(MODELS_DIR / i, env=None, device="cpu") for i in EXPERT_MODEL_PATHS
     ]
     print("Loading student...")
-    student = StudentModelXLLL()
+    student = StudentModelMLV2()
 
     # helpers for training and eval
     def configureEnv(e: DistillEnv, task_id: int):
@@ -93,21 +92,35 @@ def main():
         if task_id == 0:  # walk forward
             x_range = (0.0, 40.0)
             vel_range = (0.0, 5.0)
+            e.config_hull_reset(x_range=x_range)
+            e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
         elif task_id == 2:  # hop forward
             x_range = (0.0, 40.0)
             vel_range = (0.0, 5.0)
+            e.config_hull_reset(x_range=x_range)
+            e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
         elif task_id == 1:  # walk backward
             x_range = (40.0, 80.0)
             vel_range = (-5.0, 0.0)
+            e.config_hull_reset(x_range=x_range)
+            e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
         elif task_id == 3:  # hop backward
             x_range = (40.0, 80.0)
             vel_range = (-5.0, 0.0)
-        e.config_hull_reset(x_range=x_range)
-        e.config_cmd_vel(
-            sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2
-        )
+            e.config_hull_reset(x_range=x_range)
+            e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
+        elif task_id == 4:  # body_tilt
+            e.config_hull_reset(x_range=(20.0, 60.0))
+            # cmd_vel is not reconfigured for body_tilt — the V2 student has separate
+            # cmd_vel and cmd_tilt inputs plus a task one-hot, so it learns which
+            # command is relevant from the task bits, not by zeroing the other.
+            # cmd_tilt is configured globally at startup (set and forget).
 
-    def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float) -> np.ndarray:
+    def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float, cmd_tilt: float = 0.0) -> np.ndarray:
+        if task_id == 4:  # body_tilt expert expects [proprio, cmd_tilt]
+            action, _ = EXPERT_MODELS[4].predict(np.append(obs, cmd_tilt), deterministic=True)
+            return action
+
         # at 0 cmd velocity, default locomotion tasks to forward ones
         if cmd_vel == 0:
             if task_id == 1:  # walk backwards
@@ -115,10 +128,7 @@ def main():
             elif task_id == 3:  # hop backwards
                 task_id = 2
 
-        # get an expert's opinion lol
-        action, _ = EXPERT_MODELS[task_id].predict(
-            np.append(obs, cmd_vel), deterministic=True
-        )
+        action, _ = EXPERT_MODELS[task_id].predict(np.append(obs, cmd_vel), deterministic=True)
         return action
 
     def getTaskPMF(t: list[float], k: float):
@@ -155,7 +165,7 @@ def main():
     writer = SummaryWriter(log_dir=str(LOGS_DIR / EXPERIMENT_NAME))
     print_run_info(
         student,
-        OBS_SIZE,
+        OBS_SIZE_V2,
         ACT_SIZE,
         device,
         N,
@@ -178,6 +188,7 @@ def main():
                 configureEnv(eval_env, task_id)
                 obs, info = eval_env.reset()
                 cmd_vel = info["cmd"]["x_vel"]
+                cmd_tilt = info["cmd"]["tilt"]
                 done = False
                 step_losses = []
                 time_alive = []
@@ -187,14 +198,15 @@ def main():
                     if done:
                         obs, info = eval_env.reset()
                         cmd_vel = info["cmd"]["x_vel"]
+                        cmd_tilt = info["cmd"]["tilt"]
                         done = False
                         time_alive.append(alive)
                         alive = 0
                     else:
                         alive += 1
 
-                    act_expert = forwardExpert(obs, task_id, cmd_vel)
-                    obs_s = StudentModel.obs(obs, task_id, cmd_vel)
+                    act_expert = forwardExpert(obs, task_id, cmd_vel, cmd_tilt)
+                    obs_s = StudentModelMLV2.obs(obs, task_id, cmd_vel, cmd_tilt)
                     pred = student(torch.tensor(obs_s, dtype=torch.float32))
                     target = torch.tensor(act_expert, dtype=torch.float32)
 
@@ -202,6 +214,7 @@ def main():
 
                     obs, _, term, trunc, info = eval_env.step(pred.numpy())
                     cmd_vel = info["cmd"]["x_vel"]
+                    cmd_tilt = info["cmd"]["tilt"]
                     done = term or trunc
 
                 time_alive.append(alive)
@@ -234,7 +247,7 @@ def main():
     start_time = time.time()
     bar = tqdm(total=(N * T) + (N * EPOCH), desc="Training", ascii=" ░▒█")
     best_loss = float("inf")
-    task_live_time = [1.0, 1.0, 1.0, 1.0]
+    task_live_time = [1.0, 1.0, 1.0, 1.0, 1.0]
 
     for n in range(N):
         iter_start = time.time()
@@ -251,23 +264,25 @@ def main():
             for _ in range(T):
                 if done:
                     current_task = int(
-                        np.random.choice(4, p=getTaskPMF(task_live_time, K))
+                        np.random.choice(5, p=getTaskPMF(task_live_time, K))
                     )
                     configureEnv(env, current_task)
                     obs, info = env.reset()
                     cmd_vel = info["cmd"]["x_vel"]
+                    cmd_tilt = info["cmd"]["tilt"]
                     alive = 0
 
-                act_expert = forwardExpert(obs, current_task, cmd_vel)
+                act_expert = forwardExpert(obs, current_task, cmd_vel, cmd_tilt)
                 # add zero-mean gaussian noise
                 act_expert += np.random.normal(0, ACT_VAR**0.5, act_expert.shape)
 
-                obs_s = StudentModel.obs(obs, current_task, cmd_vel)
+                obs_s = StudentModelMLV2.obs(obs, current_task, cmd_vel, cmd_tilt)
                 act_student = student(torch.tensor(obs_s, dtype=torch.float32)).numpy()
 
                 alive += 1
                 obs, _, term, trunc, info = env.step(act_student)
                 cmd_vel = info["cmd"]["x_vel"]
+                cmd_tilt = info["cmd"]["tilt"]
                 done = term or trunc
 
                 if done:

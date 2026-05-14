@@ -5,6 +5,7 @@ from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 import os
 
+from wrappers.bipedal_walker.body_tilt_env import BodyTiltEnv
 from wrappers.plot_env import Plotter
 from wrappers.plot_reward_env import RewardPlotter
 from wrappers.bipedal_walker.hop_env import HopEnv
@@ -35,12 +36,13 @@ def main():
     )  # no autodisplay, we'll use our own wrapper render
     
     wrap_env = ProprioObsWrapper(
-        WalkEnv(
+        BodyTiltEnv(
             env,
             ep_time=15,
-            vel_switching_freq=3,
-            vel_sample_range=(0, 5),
-            vel_sample_zero=0.05,
+            ang_switching_freq=1,
+            ang_sample_range=(-0.75, 0.75),
+            ang_sample_zero=0.15,
+            ang_interp_speed=0.3,
         )
     )
     if PLOT_MODE == "obs":

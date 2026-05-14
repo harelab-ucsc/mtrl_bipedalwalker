@@ -28,10 +28,10 @@ VEL_DIR_THRESH = 0.5  # m/s
 # agent_type "hybrid" → oracle router between the 4 expert PPO models (path unused)
 AGENTS: list[tuple[str, str, str]] = [
     # --- Finetuned models ---
-    ("xl_3.3.3a_g97", "rlft/finetuned/xl_3.3.3a_g97-03_31_53-2026_05_12/best/best_model", "ppo"),
-    ("xl_3.3.3_g97",  "rlft/finetuned/xl_3.3.3_g97-03_31_47-2026_05_12/best/best_model",  "ppo"),
-    ("ml_3.3.3a_g97", "rlft/finetuned/ml_3.3.3a_g97-03_31_39-2026_05_12/best/best_model", "ppo"),
-    ("ml_3.3.3_g97",  "rlft/finetuned/ml_3.3.3_g97-03_31_34-2026_05_12/best/best_model",  "ppo"),
+    ("ml_3.4.1_g97",  "rlft/finetuned/ml_3.4.1_g97-02_53_58-2026_05_13/best/best_model",  "ppo"),
+    ("ml_3.4.2_g97",  "rlft/finetuned/ml_3.4.2_g99-02_54_12-2026_05_13/best/best_model",  "ppo"),
+    ("ml_3.4.3_g97",  "rlft/finetuned/ml_3.4.3_g97-02_54_26-2026_05_13/best/best_model",  "ppo"),
+    ("ml_3.4.4_g97",  "rlft/finetuned/ml_3.4.4_g97-02_54_53-2026_05_13/best/best_model",  "ppo"),
     
     ("ml_3.3.2a_g97", "rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12/best/best_model", "ppo"),
     ("ml_3.3.2_g97",  "rlft/finetuned/ml_3.3.2_g97-01_08_13-2026_05_12/best/best_model",  "ppo"),
@@ -39,6 +39,15 @@ AGENTS: list[tuple[str, str, str]] = [
     ("ml_3.3.1_g97",  "rlft/finetuned/ml_3.3.1_g97-15_16_22-2026_05_11/best/best_model",  "ppo"),
     ("ml_3.2.8_g97",  "rlft/finetuned/ml_3.2.8_g97-19_04_21-2026_05_08/best/best_model",  "ppo"),
     ("xl_3.2.8_g97",  "rlft/finetuned/xl_3.2.8_g97-19_04_25-2026_05_08/best/best_model",  "ppo"),
+    
+    # ("ml_3.3.5_g97",  "rlft/finetuned/ml_3.3.5_g97-22_25_13-2026_05_12/best/best_model",  "ppo"),
+    # ("ml_3.3.5a_g97", "rlft/finetuned/ml_3.3.5a_g97-22_27_26-2026_05_12/best/best_model", "ppo"),
+    
+    # ("ml_3.3.4_g97",  "rlft/finetuned/ml_3.3.4_g97-14_11_25-2026_05_12/best/best_model",  "ppo"),
+    # ("ml_3.3.4a_g97", "rlft/finetuned/ml_3.3.4a_g97-14_11_39-2026_05_12/best/best_model", "ppo"),
+    # ("ml_3.3.4_g95",  "rlft/finetuned/ml_3.3.4_g95-14_12_09-2026_05_12/best/best_model",  "ppo"),
+    # ("ml_3.3.4a_g95", "rlft/finetuned/ml_3.3.4a_g95-14_12_26-2026_05_12/best/best_model", "ppo"),
+    
     # ("ml_3.2.7_g97",  "rlft/finetuned/ml_3.2.7_g97-15_52_42-2026_05_08/best/best_model",  "ppo"),
     # ("ml_3.2.6_g97",  "rlft/finetuned/ml_3.2.6_g97-15_21_59-2026_05_08/best/best_model",  "ppo"),
     # ("ml_3.2.5_g97",  "rlft/finetuned/ml_3.2.5_g97-15_00_01-2026_05_08/best/best_model",  "ppo"),
@@ -85,7 +94,7 @@ def _eval_agent_worker(name: str, model_path: str, agent_type: str, n_steps: int
         ep_time=20,
         vel_switching_freq=3,
         task_switching_freq=6,
-        vel_interp_speed=3.0,
+        vel_interp_speed=6.0,
     )
 
     if agent_type == "ppo":

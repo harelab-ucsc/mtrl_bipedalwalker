@@ -73,9 +73,24 @@ class DistillEnv(ProprioObsWrapper):
         self._cmd_vel_target: float = 0.0
         self._cmd_vel_buf: list[float] = [0.0]  # smooth out transitions
 
+        # cmd tilt — configurable via config_cmd_tilt
+        self._tilt_switch_steps: int = self._max_steps
+        self._tilt_sample_range: tuple[float, float] = (0.0, 0.0)
+        self._tilt_sample_zero: float = 0.0
+        self._max_tilt_buf_size: int = 1
+
+        # runtime cmd tilt state
+        self._cmd_tilt: float = 0.0
+        self._cmd_tilt_target: float = 0.0
+        self._cmd_tilt_buf: list[float] = [0.0]  # smooth out transitions
+
         # tasks (purely cosmetic)
         self._task_names = task_names
         self._cur_task_id = 0
+
+        # active task bits for rendering: [walk_active, hop_active, tilt_active]
+        # None = no conditional arrow rendering (used during training)
+        self._active_tasks: list[int] | None = None
 
     def set_task(self, id):
         self._cur_task_id = id
@@ -155,6 +170,42 @@ class DistillEnv(ProprioObsWrapper):
         self._max_vel_buf_size = max(int(interp_time * self._FPS), 1)
         self._vel_sample_zero = zero_prob
 
+    def config_cmd_tilt(
+        self,
+        sample_range: tuple[float, float] = (-0.75, 0.75),
+        switch_time: float = 10.0,
+        interp_time: float = 1.0,
+        zero_prob: float = 0.15,
+    ):
+        """Configure command tilt sampling and switching behaviour.
+
+        Args:
+            sample_range: Range from which a new target tilt angle is drawn at each
+                switch. Default: (-0.75, 0.75).
+            switch_time: How often (seconds) a new target tilt is sampled.
+                Set to ep_time or higher to keep tilt constant per episode.
+                Default: 10.0.
+            interp_time: Window length (seconds) over which tilt transitions are
+                smoothed via a rolling mean. 0.0 means instantaneous switching.
+                Default: 1.0.
+            zero_prob: Probability [0, 1] of sampling exactly 0 instead of drawing
+                from sample_range. Default: 0.15.
+        """
+        self._tilt_sample_range = sample_range
+        self._tilt_switch_steps = max(int(switch_time * self._FPS), 1)
+        self._max_tilt_buf_size = max(int(interp_time * self._FPS), 1)
+        self._tilt_sample_zero = zero_prob
+
+    def set_active_tasks(self, task_one_hot: list[int] | None):
+        """Set which tasks are active for rendering purposes.
+
+        Args:
+            task_one_hot: [walk_active, hop_active, tilt_active] — determines which
+                arrow overlays are drawn. None disables conditional rendering entirely.
+                Called from play scripts; not needed during training.
+        """
+        self._active_tasks = task_one_hot
+
     def step(
         self, action: Any
     ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
@@ -164,11 +215,6 @@ class DistillEnv(ProprioObsWrapper):
         # detect truncation
         self._step_count += 1
         trunc = trunc or self._step_count >= self._max_steps
-
-        info["cmd"] = {
-            "x_vel": self._cmd_vel,
-            # TODO: add sit command
-        }
 
         # change command velocity if specified
         if (
@@ -188,6 +234,30 @@ class DistillEnv(ProprioObsWrapper):
 
         # update cmd vel
         self._cmd_vel = float(np.mean(self._cmd_vel_buf))
+
+        # change command tilt if specified
+        if (
+            self._tilt_switch_steps < self._max_steps
+            and self._step_count % self._tilt_switch_steps == 0
+        ):
+            if self._rng.random() > self._tilt_sample_zero:
+                self._cmd_tilt_target = self._rng.uniform(*self._tilt_sample_range)
+            else:
+                self._cmd_tilt_target = 0.0
+
+        # push the target tilt to the buf
+        self._cmd_tilt_buf.append(self._cmd_tilt_target)
+        if len(self._cmd_tilt_buf) > self._max_tilt_buf_size:
+            # trim front
+            self._cmd_tilt_buf.pop(0)
+
+        # update cmd tilt
+        self._cmd_tilt = float(np.mean(self._cmd_tilt_buf))
+
+        info["cmd"] = {
+            "x_vel": self._cmd_vel,
+            "tilt": self._cmd_tilt,
+        }
 
         return obs, 0, term, trunc, info  # no reward information needed
 
@@ -234,6 +304,52 @@ class DistillEnv(ProprioObsWrapper):
         # blue = real
         _draw_arrow(pygame, env, real_vel_x, color=(71, 126, 255))
 
+    def _draw_tilt_arrows(self, env):
+        SCALE = 30.0
+        VIEWPORT_H = 400
+        HULL_FRONT_OFFSET = 25
+        BLUE_ARROW_LEN = 45
+        GREEN_ARROW_LEN = 30
+        HEAD_LEN = 10
+        HEAD_WIDTH = 5
+
+        unwrapped: Any = self.unwrapped
+        hull_ang = unwrapped.hull.angle
+        hull_x, hull_y = unwrapped.hull.position
+        cx = hull_x * SCALE
+        cy = VIEWPORT_H - hull_y * SCALE
+
+        def screen_dir(angle):
+            return math.cos(angle), -math.sin(angle)
+
+        def draw_segment(start, end, color):
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            length = math.sqrt(dx * dx + dy * dy)
+            if length < 1e-6:
+                return
+            ux, uy = dx / length, dy / length
+            shaft_end = (end[0] - ux * HEAD_LEN, end[1] - uy * HEAD_LEN)
+            pygame.draw.line(
+                env.surf, color,
+                (int(start[0]), int(start[1])),
+                (int(shaft_end[0]), int(shaft_end[1])), 2,
+            )
+            px, py = -uy, ux
+            tip = (int(end[0]), int(end[1]))
+            p2 = (int(end[0] - ux * HEAD_LEN + px * HEAD_WIDTH), int(end[1] - uy * HEAD_LEN + py * HEAD_WIDTH))
+            p3 = (int(end[0] - ux * HEAD_LEN - px * HEAD_WIDTH), int(end[1] - uy * HEAD_LEN - py * HEAD_WIDTH))
+            pygame.draw.polygon(env.surf, color, [tip, p2, p3])
+
+        bx, by = screen_dir(hull_ang)
+        anchor = (cx + HULL_FRONT_OFFSET * bx, cy + HULL_FRONT_OFFSET * by)
+        blue_end = (anchor[0] + BLUE_ARROW_LEN * bx, anchor[1] + BLUE_ARROW_LEN * by)
+
+        gx, gy = screen_dir(self._cmd_tilt)
+        green_end = (anchor[0] + (BLUE_ARROW_LEN + GREEN_ARROW_LEN) * gx, anchor[1] + (BLUE_ARROW_LEN + GREEN_ARROW_LEN) * gy)
+
+        draw_segment(anchor, blue_end, (71, 126, 255))   # blue = actual hull angle
+        draw_segment(anchor, green_end, (9, 176, 12))    # green = command tilt
+
     def _draw_task_info(self, env):
         unwrapped: Any = self.unwrapped
         real_vel_x: float = unwrapped.hull.linearVelocity.x
@@ -248,6 +364,7 @@ class DistillEnv(ProprioObsWrapper):
         lines = [
             f"task:  {task_name}",
             f"cmd_x_vel: {self._cmd_vel:+.2f}",
+            f"cmd_tilt:  {self._cmd_tilt:+.2f}",
             f"hull_x_vel: {real_vel_x:+.2f}",
         ]
 
@@ -265,7 +382,12 @@ class DistillEnv(ProprioObsWrapper):
         if not hasattr(env, "surf") or env.surf is None:
             return result
 
-        self._draw_velocity_arrows(env)
+        if self._active_tasks is not None:
+            if self._active_tasks[0] or self._active_tasks[1]:  # walk or hop active
+                self._draw_velocity_arrows(env)
+            if self._active_tasks[2]:  # tilt active
+                self._draw_tilt_arrows(env)
+
         self._draw_task_info(env)
 
         # re-grab the frame after drawing on surf
@@ -287,6 +409,15 @@ class DistillEnv(ProprioObsWrapper):
 
         self._cmd_vel_target = self._cmd_vel  # reset target
         self._cmd_vel_buf = [self._cmd_vel]  # reset buffer
+
+        # resample command tilt
+        if self._rng.random() > self._tilt_sample_zero:
+            self._cmd_tilt = self._rng.uniform(*self._tilt_sample_range)
+        else:
+            self._cmd_tilt = 0.0
+
+        self._cmd_tilt_target = self._cmd_tilt  # reset target
+        self._cmd_tilt_buf = [self._cmd_tilt]  # reset buffer
 
         env: Any = self.unwrapped
         hull = env.hull
@@ -369,7 +500,7 @@ class DistillEnv(ProprioObsWrapper):
         # add command info
         info["cmd"] = {
             "x_vel": self._cmd_vel,
-            # TODO: add sit command
+            "tilt": self._cmd_tilt,
         }
 
         return obs, info
