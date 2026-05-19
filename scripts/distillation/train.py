@@ -35,20 +35,27 @@ EXPERT_MODEL_PATHS = [
     "experts/walk_forward",
     "experts/walk_backward",
     "experts/hop_forward",
-    "experts/hop_backward",
     "experts/body_tilt",
 ]
 
 TASK_NAMES = [
     "walk_forward",
     "walk_backward",
-    "hop_forward",
-    "hop_backward",
-    "body_tilt",
+    "flamingo",
+    "tilt",
 ]
 
-EXPERIMENT_NAME = "distill_v2/ml.mix"
+MODEL_SIZE    = "ml"
+MAJOR_VERSION = 1
+MINOR_VERSION = 1
+NOISE_COEF    = "n00"
+MIX_MODE      = "mix"  # "mix" or "nomix"
+
+MODEL_NAME      = f"{MODEL_SIZE}.{MAJOR_VERSION}.{MINOR_VERSION}.{NOISE_COEF}.{MIX_MODE}"
+EXPERIMENT_NAME = f"distill_v2/{MODEL_NAME}"
 # + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
+MIX_IRRELEVANT_INPUT    = MIX_MODE == "mix"
+ADVERSARIAL_TASK_SELECT = True
 
 _sim_paused = False
 _sim_step = False
@@ -67,18 +74,16 @@ def main():
 
     # 0: walk forward
     # 1: walk backward
-    # 2: hop forward
-    # 3: hop backward
+    # 2: flamingo
+    # 3: tilt
 
     env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=7)
     eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10)
 
-    # configure tilt command once — body_tilt task uses this; locomotion tasks ignore it
-    # via their task one-hot bits (the V2 student learns which command is relevant per task)
-    env.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=10, interp_time=1, zero_prob=0.15)
-    eval_env.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=10, interp_time=1, zero_prob=0.15)
+    # env.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=10, interp_time=1, zero_prob=0.15)
+    # eval_env.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=10, interp_time=1, zero_prob=0.15)
 
-    # load  models
+    # load models
     print("Loading experts...")
     EXPERT_MODELS = [
         PPO.load(MODELS_DIR / i, env=None, device="cpu") for i in EXPERT_MODEL_PATHS
@@ -94,50 +99,69 @@ def main():
             vel_range = (0.0, 5.0)
             e.config_hull_reset(x_range=x_range)
             e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
-        elif task_id == 2:  # hop forward
-            x_range = (0.0, 40.0)
-            vel_range = (0.0, 5.0)
-            e.config_hull_reset(x_range=x_range)
-            e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
+            
+            if MIX_IRRELEVANT_INPUT:  # mix in random tilt commands as well
+                e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+            else:  # reset tilt command to 0 for clean input
+                e.config_cmd_tilt(zero_prob=1)
         elif task_id == 1:  # walk backward
             x_range = (40.0, 80.0)
             vel_range = (-5.0, 0.0)
             e.config_hull_reset(x_range=x_range)
             e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
-        elif task_id == 3:  # hop backward
-            x_range = (40.0, 80.0)
-            vel_range = (-5.0, 0.0)
+            
+            if MIX_IRRELEVANT_INPUT:  # mix in random tilt commands as well
+                e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+            else:  # reset tilt command to 0 for clean input
+                e.config_cmd_tilt(zero_prob=1)
+        elif task_id == 2:  # flamingo
+            x_range = (20.0, 60.0)
             e.config_hull_reset(x_range=x_range)
-            e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
-        elif task_id == 4:  # body_tilt
-            e.config_hull_reset(x_range=(20.0, 60.0))
-            # cmd_vel is not reconfigured for body_tilt — the V2 student has separate
-            # cmd_vel and cmd_tilt inputs plus a task one-hot, so it learns which
-            # command is relevant from the task bits, not by zeroing the other.
-            # cmd_tilt is configured globally at startup (set and forget).
+            
+            if MIX_IRRELEVANT_INPUT:  # mix in random tilt and velocity commands
+                e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
+                e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+            else:  # reset tilt and velocity command to 0 for clean input
+                e.config_cmd_vel(zero_prob=1)
+                e.config_cmd_tilt(zero_prob=1)
+        elif task_id == 3:  # tilt
+            x_range = (20.0, 60.0)
+            tilt_range = (-0.75, 0.75)
+            e.config_hull_reset(x_range=x_range)
+            e.config_cmd_tilt(sample_range=tilt_range, switch_time=3, interp_time=0.5, zero_prob=0.15)
+            
+            if MIX_IRRELEVANT_INPUT:  # mix in random velocity commands
+                e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
+            else:  # reset velocity command to 0 for clean input
+                e.config_cmd_vel(zero_prob=1)
 
     def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float, cmd_tilt: float = 0.0) -> np.ndarray:
-        if task_id == 4:  # body_tilt expert expects [proprio, cmd_tilt]
-            action, _ = EXPERT_MODELS[4].predict(np.append(obs, cmd_tilt), deterministic=True)
+        # body_tilt expert expects [proprio, cmd_tilt]
+        if task_id == 3:
+            action, _ = EXPERT_MODELS[3].predict(np.append(obs, cmd_tilt), deterministic=True)
+            return action
+        # for flamingo, poll the expert with a cmd velocity of 0
+        if task_id == 2:
+            action, _ = EXPERT_MODELS[2].predict(np.append(obs, 0), deterministic=True)
             return action
 
         # at 0 cmd velocity, default locomotion tasks to forward ones
-        if cmd_vel == 0:
-            if task_id == 1:  # walk backwards
-                task_id = 0
-            elif task_id == 3:  # hop backwards
-                task_id = 2
+        if cmd_vel == 0 and task_id == 1:
+            task_id = 0
 
         action, _ = EXPERT_MODELS[task_id].predict(np.append(obs, cmd_vel), deterministic=True)
         return action
 
     def getTaskPMF(t: list[float], k: float):
-        assert 0 <= k <= 1
-        w = [max(t) - i for i in t]
-        sum_w = sum(w)
-        U = [1 / len(t)] * len(t)
-        P = [U[i] if sum_w == 0 else w[i] / sum_w for i in range(len(t))]
-        return [k * p_i + (1 - k) * u_i for p_i, u_i in zip(P, U)]
+        if ADVERSARIAL_TASK_SELECT:
+            assert 0 <= k <= 1
+            w = [max(t) - i for i in t]
+            sum_w = sum(w)
+            U = [1 / len(t)] * len(t)
+            P = [U[i] if sum_w == 0 else w[i] / sum_w for i in range(len(t))]
+            return [k * p_i + (1 - k) * u_i for p_i, u_i in zip(P, U)]
+        else:
+            return [1/len(t)] * len(t)
 
     # DAgger hyperparams
     T = 1500  # env steps per iter
@@ -148,7 +172,7 @@ def main():
     LR = 1e-3
     DECAY = 1e-2
     SCHED_RESTART_ITERS = 2  # dagger iterations per cosine restart
-    ACT_VAR = 0.2  # action variance during data collection
+    ACT_VAR = 0.5  # action variance during data collection
     K = 0.85  # how much to prioritize choosing worst task (1 = max, 0 = uniform)
     T_EVAL = 2000  # eval steps per expert task
 
@@ -247,7 +271,7 @@ def main():
     start_time = time.time()
     bar = tqdm(total=(N * T) + (N * EPOCH), desc="Training", ascii=" ░▒█")
     best_loss = float("inf")
-    task_live_time = [1.0, 1.0, 1.0, 1.0, 1.0]
+    task_live_time = [1.0, 1.0, 1.0, 1.0]
 
     for n in range(N):
         iter_start = time.time()
@@ -264,7 +288,7 @@ def main():
             for _ in range(T):
                 if done:
                     current_task = int(
-                        np.random.choice(5, p=getTaskPMF(task_live_time, K))
+                        np.random.choice(4, p=getTaskPMF(task_live_time, K))
                     )
                     configureEnv(env, current_task)
                     obs, info = env.reset()

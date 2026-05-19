@@ -2,24 +2,32 @@ import numpy as np
 import torch
 from torch import nn
 
-
 BASE_OBS_SIZE = 14
-OBS_SIZE = BASE_OBS_SIZE + 3  # base obs + cmd_vel + 2 one-hot task bits (walk=10, hop=01)
-OBS_SIZE_V2 = BASE_OBS_SIZE + 2 + 3  # base obs + cmd_vel + cmd_tilt + 3 one-hot task bits (walk=100, hop=010, tilt=001)
+OBS_SIZE = (
+    BASE_OBS_SIZE + 3
+)  # base obs + cmd_vel + 2 one-hot task bits (walk=10, hop=01)
+OBS_SIZE_V2 = (
+    BASE_OBS_SIZE + 2 + 3
+)  # base obs + cmd_vel + cmd_tilt + 3 one-hot task bits (walk=100, hop=010, tilt=001)
 ACT_SIZE = 4
 
-HIDDEN_XS   = (128, 64, 32)
-HIDDEN_S    = (192, 96, 48)
-HIDDEN_M    = (256, 128, 64)
-HIDDEN_ML   = (320, 160, 80)
-HIDDEN_L    = (384, 192, 96)
-HIDDEN_XL   = (512, 256, 128)
-HIDDEN_XLL  = (768, 384, 192)
+HIDDEN_XS = (128, 64, 32)
+HIDDEN_S = (192, 96, 48)
+HIDDEN_M = (256, 128, 64)
+HIDDEN_ML = (320, 160, 80)
+HIDDEN_L = (384, 192, 96)
+HIDDEN_XL = (512, 256, 128)
+HIDDEN_XLL = (768, 384, 192)
 HIDDEN_XLLL = (1024, 512, 256)
 
 
 class StudentModel(nn.Module):
-    def __init__(self, obs_size: int = OBS_SIZE, act_size: int = ACT_SIZE, hidden: tuple = HIDDEN_M):
+    def __init__(
+        self,
+        obs_size: int = OBS_SIZE,
+        act_size: int = ACT_SIZE,
+        hidden: tuple = HIDDEN_M,
+    ):
         super().__init__()
         layers = []
         in_dim = obs_size
@@ -78,7 +86,12 @@ class StudentModelXLLL(StudentModel):
 
 
 class StudentModelV2(nn.Module):
-    def __init__(self, obs_size: int = OBS_SIZE_V2, act_size: int = ACT_SIZE, hidden: tuple = HIDDEN_M):
+    def __init__(
+        self,
+        obs_size: int = OBS_SIZE_V2,
+        act_size: int = ACT_SIZE,
+        hidden: tuple = HIDDEN_M,
+    ):
         super().__init__()
         layers = []
         in_dim = obs_size
@@ -92,13 +105,23 @@ class StudentModelV2(nn.Module):
         return self.policy(x)
 
     @staticmethod
-    def obs(base_obs: np.ndarray, task_id: int, cmd_vel: float, cmd_tilt: float) -> np.ndarray:
-        if task_id < 2:
-            task_bits = [1, 0, 0]  # walk
-        elif task_id < 4:
-            task_bits = [0, 1, 0]  # hop
-        else:
-            task_bits = [0, 0, 1]  # body_tilt
+    def obs(
+        base_obs: np.ndarray,
+        task_id: int,
+        cmd_vel: float,
+        cmd_tilt: float,
+        task_bit_override: tuple[int, int, int] | None = None,
+    ) -> np.ndarray:
+        task_bits = task_bit_override
+        
+        if task_bits is None:  # determine task bits implicitly
+            if task_id == 0 or task_id == 1:
+                task_bits = [1, 0, 0]  # walk
+            elif task_id == 2:
+                task_bits = [0, 1, 0]  # flamingo
+            else:
+                task_bits = [0, 0, 1]  # body_tilt
+
         return np.concatenate([base_obs, [cmd_vel, cmd_tilt], task_bits])
 
 

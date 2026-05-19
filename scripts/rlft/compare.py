@@ -15,10 +15,10 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # =========================================
 
 EXPERIMENTS = [
+    ("rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12", "3.3.2a"),
+    ("rlft/finetuned/ml_3.4.3_g97-02_54_26-2026_05_13", "3.4.3"),
+    ("rlft/finetuned/ml_3.4.1_g97-02_53_58-2026_05_13", "3.3.1"),
     ("rlft/finetuned/ml_3.3.2_g97-01_08_13-2026_05_12", "3.3.2"),
-    # ("rlft/finetuned/ml_3.3.4_g97-14_11_25-2026_05_12", "3.3.4"),
-    # ("rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12", "3.3.2a"),
-    ("rlft/finetuned/ml_3.3.5a_g97-22_27_26-2026_05_12", "3.3.5a"),
 ]
 
 MODEL_CHECKPOINT = "best/best_model"
@@ -29,7 +29,7 @@ FPS = 50
 
 # Rate at which velocity target changes when arrow key is held (m/s per second).
 # Also controls the interpolation speed of _cmd_vel toward the target.
-VEL_KEY_SPEED = 10.0
+VEL_KEY_SPEED = 5.0
 
 # =========================================
 

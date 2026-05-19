@@ -72,3 +72,46 @@ class HybridModel():
         elif task_id < 4:  task_bits = [0, 1, 0]
         else:              task_bits = [0, 0, 1]
         return np.concatenate([base_obs, [cmd_vel, cmd_tilt], task_bits])
+
+
+class HybridModelV2():
+    """Oracle baseline for the V2 4-task setup.
+
+    Routing per task (obs layout: [base(14), cmd_vel, cmd_tilt, walk, hop, tilt]):
+      walk  [1,0,0] — walk_forward  expert (cmd_vel >= 0) or walk_backward (cmd_vel < 0)
+      hop   [0,1,0] — hop_backward  expert @ 0  (flamingo is always hop_backward @ 0)
+      tilt  [0,0,1] — body_tilt     expert with cmd_tilt
+    """
+
+    def __init__(self):
+        self.expert_models = [
+            PPO.load(MODELS_DIR / i, env=None, device="cpu") for i in EXPERT_MODEL_PATHS
+        ]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        base_obs = x[:BASE_OBS_SIZE].numpy()
+        cmd_vel  = x[-5].item()
+        cmd_tilt = x[-4].item()
+        walk_bit = x[-3].item()
+        hop_bit  = x[-2].item()
+        tilt_bit = x[-1].item()
+
+        if tilt_bit == 1:
+            action, _ = self.expert_models[4].predict(
+                np.append(base_obs, cmd_tilt), deterministic=True
+            )
+        elif hop_bit == 1:
+            # flamingo: hop_backward expert at cmd_vel=0
+            action, _ = self.expert_models[3].predict(
+                np.append(base_obs, 0.0), deterministic=True
+            )
+        elif walk_bit == 1 and cmd_vel >= 0:
+            action, _ = self.expert_models[0].predict(
+                np.append(base_obs, cmd_vel), deterministic=True
+            )
+        elif walk_bit == 1 and cmd_vel < 0:
+            action, _ = self.expert_models[1].predict(
+                np.append(base_obs, cmd_vel), deterministic=True
+            )
+
+        return torch.tensor(action)

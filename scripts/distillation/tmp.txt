@@ -1,0 +1,80 @@
+Eval conditions:
+  metric:        Hop Reward
+  models:        7  (ml.mix.1.1, ml.nomix.1.1, ml.mix.unif.1.1, ml.nomix.unif.1.1, walk_fwd [base], walk_bwd [base], flamingo [base])
+  tasks:         2  (walk_forward + flamingo, walk_backward + flamingo)
+  steps / task:  1,000,000
+  total steps:   28,000,000
+
+--- No irrelevant input (nomix) ---
+====================================================================================
+Model              Avg Hop Reward  walk_forward + flamingo  walk_backward + flamingo
+====================================================================================
+ml.nomix.1.1            -383.57                  -377.98                   -389.16
+ml.mix.unif.1.1         -434.55                  -375.63                   -493.48
+ml.mix.1.1              -463.33                  -470.82                   -455.84
+ml.nomix.unif.1.1       -595.62                  -772.94                   -418.30
+flamingo [base]         -601.03                  -660.14                   -541.91
+walk_fwd [base]         -692.84                  -225.33                  -1160.36
+walk_bwd [base]         -742.24                 -1140.91                   -343.56
+====================================================================================
+
+--- With irrelevant input (mix)  ---
+====================================================================================
+Model              Avg Hop Reward  walk_forward + flamingo  walk_backward + flamingo
+====================================================================================
+ml.nomix.1.1            -407.69                  -403.64                   -411.73
+ml.mix.unif.1.1         -429.73                  -370.67                   -488.80
+ml.mix.1.1              -471.12                  -476.22                   -466.02
+ml.nomix.unif.1.1       -496.64                  -585.08                   -408.20
+flamingo [base]         -603.35                  -675.95                   -530.75
+walk_fwd [base]         -687.86                  -228.22                  -1147.49
+walk_bwd [base]         -750.24                 -1154.10                   -346.38
+====================================================================================
+
+
+
+
+
+
+Eval conditions:
+  metric:        Hop Reward
+  models:        12  (ml.nomix.n00.1.1, ml.mix.n00.1.1, ml.nomix.n05.1.1, ml.mix.n05.1.1, ml.mix.1.1, ml.nomix.1.1, ml.mix.unif.1.1, ml.nomix.unif.1.1, hybrid, walk_fwd [base], walk_bwd [base], flamingo [base])
+  tasks:         2  (walk_forward + flamingo, walk_backward + flamingo)
+  steps / task:  1,000,000
+  total steps:   48,000,000
+
+--- No irrelevant input (nomix) ---
+====================================================================================
+Model              Avg Hop Reward  walk_forward + flamingo  walk_backward + flamingo
+====================================================================================
+ml.nomix.n05.1.1        -324.26                  -285.83                   -362.68
+ml.nomix.1.1            -382.06                  -377.57                   -386.55
+ml.mix.unif.1.1         -436.82                  -376.31                   -497.33
+ml.nomix.n00.1.1        -437.18                  -428.40                   -445.97
+ml.mix.1.1              -461.25                  -463.65                   -458.84
+ml.mix.n05.1.1          -505.25                  -589.21                   -421.29
+ml.nomix.unif.1.1       -594.87                  -775.02                   -414.72
+flamingo [base]         -603.76                  -672.71                   -534.81
+hybrid                  -613.09                  -671.99                   -554.19
+walk_fwd [base]         -684.43                  -224.71                  -1144.16
+ml.mix.n00.1.1          -714.37                  -614.96                   -813.79
+walk_bwd [base]         -735.64                 -1123.49                   -347.79
+====================================================================================
+
+--- With irrelevant input (mix)  ---
+====================================================================================
+Model              Avg Hop Reward  walk_forward + flamingo  walk_backward + flamingo
+====================================================================================
+ml.nomix.n05.1.1        -349.64                  -332.18                   -367.09
+ml.nomix.1.1            -405.25                  -401.42                   -409.08
+ml.mix.unif.1.1         -431.87                  -368.20                   -495.54
+ml.mix.1.1              -468.44                  -475.20                   -461.67
+ml.nomix.n00.1.1        -478.65                  -506.12                   -451.18
+ml.nomix.unif.1.1       -489.17                  -574.82                   -403.52
+ml.mix.n05.1.1          -495.02                  -557.83                   -432.20
+flamingo [base]         -592.62                  -659.23                   -526.01
+hybrid                  -599.58                  -663.13                   -536.04
+walk_fwd [base]         -688.69                  -229.26                  -1148.12
+ml.mix.n00.1.1          -689.49                  -577.44                   -801.54
+walk_bwd [base]         -734.35                 -1122.33                   -346.36
+====================================================================================

@@ -21,7 +21,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # =========================================
 
-EXPERIMENT_NAME = "distill_v2/ml_1"
+EXPERIMENT_NAME = "distill/ml"
 MODEL_CHECKPOINT = "best.pt"
 
 # =========================================

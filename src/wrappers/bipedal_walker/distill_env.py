@@ -98,7 +98,7 @@ class DistillEnv(ProprioObsWrapper):
     def config_hull_reset(
         self,
         x_range: tuple[float, float] = (0.0, 40.0),
-        y_range: tuple[float, float] = (0.1, 0.3),
+        y_range: tuple[float, float] = (0.2, 0.3),
         rot_range: tuple[float, float] = (-0.2, 0.2),
         vel_x_range: tuple[float, float] = (-0.2, 0.2),
         vel_y_range: tuple[float, float] = (0.0, 0.0),
@@ -363,9 +363,10 @@ class DistillEnv(ProprioObsWrapper):
         task_name = self._task_names.get(self._cur_task_id, "NA")
         lines = [
             f"task:  {task_name}",
-            f"cmd_x_vel: {self._cmd_vel:+.2f}",
-            f"cmd_tilt:  {self._cmd_tilt:+.2f}",
-            f"hull_x_vel: {real_vel_x:+.2f}",
+            f"cmd_x_vel:    {self._cmd_vel:+.2f}",
+            f"cmd_tilt:     {self._cmd_tilt:+.2f}",
+            f"active_tasks: {self._active_tasks}",
+            f"hull_x_vel:   {real_vel_x:+.2f}",
         ]
 
         scroll_x = int(getattr(env, "scroll", 0) * SCALE) + MARGIN
