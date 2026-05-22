@@ -11,12 +11,21 @@ from wrappers.plot_reward_env import RewardPlotter
 from wrappers.bipedal_walker.hop_env import HopEnv
 from wrappers.bipedal_walker.walk_env import WalkEnv
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
+from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 
 SEED = 42
 # None     → no plots
 # "obs"    → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)
 PLOT_MODE: str | None = None
+
+# task mixes to draw from — each row is (walk, flamingo, tilt)
+ALLOWED_TASK_MIXING: list[tuple[int, int, int]] = [
+    (1, 0, 0),  # walk
+    (0, 1, 0),  # flamingo
+    (0, 0, 1),  # tilt
+    (1, 0, 1),  # walk + tilt
+]
 
 _sim_paused = False
 _sim_step = False
@@ -35,15 +44,15 @@ def main():
         "BipedalWalker-v3", render_mode="rgb_array"
     )  # no autodisplay, we'll use our own wrapper render
     
-    wrap_env = ProprioObsWrapper(
-        BodyTiltEnv(
-            env,
-            ep_time=15,
-            ang_switching_freq=1,
-            ang_sample_range=(-0.75, 0.75),
-            ang_sample_zero=0.15,
-            ang_interp_speed=0.3,
-        )
+    wrap_env = RlFTEnv(
+        env,
+        ep_time=15,
+        cmd_switching_time=(3.0, 4.0),
+        task_switching_time=4.0,
+        cmd_interp_speed=(5.0, 1.0),
+        cmd_sample_range=((-5.0, 5.0), (-0.75, 0.75)),
+        cmd_sample_zero=(0.2, 0.15),
+        allowed_task_mixing=ALLOWED_TASK_MIXING,
     )
     if PLOT_MODE == "obs":
         wrap_env = Plotter(wrap_env)
@@ -96,8 +105,12 @@ def main():
         # zero agent
         # action = np.zeros(wrap_env.action_space.shape)
 
-        _, _, term, trunc, _ = wrap_env.step(action)
-        print("=== Testing with action: ", action)
+        obs, _, term, trunc, _ = wrap_env.step(action)
+        np.set_printoptions(precision=3, suppress=True, linewidth=200)
+        print(f"=== action: {action}")
+        print(f"    obs   : {np.asarray(obs)}")
+        # the last 5 dims are the [vel, tilt, walk, flamingo, tilt-task] appended by RlFTEnv
+        print(f"    cmd+task: {np.asarray(obs)[-5:]}")
 
         render()
 
