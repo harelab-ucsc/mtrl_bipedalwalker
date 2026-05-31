@@ -287,7 +287,7 @@ class RolloutBuffer(BaseBuffer):
             ]
 
             for tensor in _tensor_names:
-                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor]) # type: ignore
             self.generator_ready = True
 
         # return everything, don't create minibatches
@@ -409,7 +409,7 @@ class DictRolloutBuffer(RolloutBuffer):
             _tensor_names = ["actions", "values", "log_probs", "advantages", "returns"]
 
             for tensor in _tensor_names:
-                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor]) # type: ignore
             self.generator_ready = True
 
         if batch_size is None:

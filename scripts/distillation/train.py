@@ -1,11 +1,11 @@
 # https://arxiv.org/pdf/2505.11164
 
 import os
+import argparse
 import warnings
 import time
 import subprocess
 import threading
-from datetime import datetime
 
 from gymnasium import make
 from stable_baselines3 import PPO
@@ -25,115 +25,72 @@ from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import fmt_duration
 from wrappers.bipedal_walker.distill_env import DistillEnv
 from mdp.bipedal_walker.student import (
-    StudentModelMLV2,
+    StudentModel,
     OBS_SIZE_V2,
     ACT_SIZE,
 )
+from train_config import PRESETS, DistillConfig
 
 
-EXPERT_MODEL_PATHS = [
-    "experts/walk_forward",
-    "experts/walk_backward",
-    "experts/hop_forward",
-    "experts/body_tilt",
-]
+# task ids: 0 walk forward, 1 walk backward, 2 flamingo, 3 tilt
+def configure_env(e: DistillEnv, task_id: int, mix: bool):
+    """Configure the env's hull reset + command sampling for a given task.
 
-TASK_NAMES = [
-    "walk_forward",
-    "walk_backward",
-    "flamingo",
-    "tilt",
-]
+    ``mix`` controls whether irrelevant commands are mixed in (so the student
+    learns to ignore them) or reset to 0 for clean inputs.
+    """
+    if task_id == 0:  # walk forward
+        e.config_hull_reset(x_range=(0.0, 40.0))
+        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_time=0.5, switch_time=3, zero_prob=0.2)
+        if mix:  # mix in random tilt commands as well
+            e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+        else:  # reset tilt command to 0 for clean input
+            e.config_cmd_tilt(zero_prob=1)
+    elif task_id == 1:  # walk backward
+        e.config_hull_reset(x_range=(40.0, 80.0))
+        e.config_cmd_vel(sample_range=(-5.0, 0.0), interp_time=0.5, switch_time=3, zero_prob=0.2)
+        if mix:
+            e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+        else:
+            e.config_cmd_tilt(zero_prob=1)
+    elif task_id == 2:  # flamingo
+        e.config_hull_reset(x_range=(20.0, 60.0))
+        if mix:  # mix in random tilt and velocity commands
+            e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
+            e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+        else:  # reset tilt and velocity command to 0 for clean input
+            e.config_cmd_vel(zero_prob=1)
+            e.config_cmd_tilt(zero_prob=1)
+    elif task_id == 3:  # tilt
+        e.config_hull_reset(x_range=(20.0, 60.0))
+        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+        if mix:  # mix in random velocity commands
+            e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
+        else:  # reset velocity command to 0 for clean input
+            e.config_cmd_vel(zero_prob=1)
 
-MODEL_SIZE    = "ml"
-MAJOR_VERSION = 1
-MINOR_VERSION = 1
-NOISE_COEF    = "n00"
-MIX_MODE      = "mix"  # "mix" or "nomix"
 
-MODEL_NAME      = f"{MODEL_SIZE}.{MAJOR_VERSION}.{MINOR_VERSION}.{NOISE_COEF}.{MIX_MODE}"
-EXPERIMENT_NAME = f"distill_v2/{MODEL_NAME}"
-# + datetime.today().strftime("-%H_%M_%S-%Y_%m_%d")
-MIX_IRRELEVANT_INPUT    = MIX_MODE == "mix"
-ADVERSARIAL_TASK_SELECT = True
-
-_sim_paused = False
-_sim_step = False
-_sim_res = False
-
-
-def main():
-    global _sim_paused, _sim_step, _sim_res
-
+def main(cfg: DistillConfig):
     if torch.accelerator.is_available():
         device = torch.accelerator.current_accelerator().type  # type: ignore
     else:
         device = "cpu"
 
+    experiment_name = cfg.experiment_name
+
     print("Loading environments...")
-
-    # 0: walk forward
-    # 1: walk backward
-    # 2: flamingo
-    # 3: tilt
-
-    env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=7)
-    eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=10)
-
-    # env.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=10, interp_time=1, zero_prob=0.15)
-    # eval_env.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=10, interp_time=1, zero_prob=0.15)
+    env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=cfg.ep_time)
+    eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=cfg.eval_ep_time)
 
     # load models
     print("Loading experts...")
     EXPERT_MODELS = [
-        PPO.load(MODELS_DIR / i, env=None, device="cpu") for i in EXPERT_MODEL_PATHS
+        PPO.load(MODELS_DIR / p, env=None, device="cpu") for p in cfg.expert_paths
     ]
     print("Loading student...")
-    student = StudentModelMLV2()
+    student = cfg.make_student()
 
-    # helpers for training and eval
-    def configureEnv(e: DistillEnv, task_id: int):
-        # config the env to a certain task
-        if task_id == 0:  # walk forward
-            x_range = (0.0, 40.0)
-            vel_range = (0.0, 5.0)
-            e.config_hull_reset(x_range=x_range)
-            e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
-            
-            if MIX_IRRELEVANT_INPUT:  # mix in random tilt commands as well
-                e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
-            else:  # reset tilt command to 0 for clean input
-                e.config_cmd_tilt(zero_prob=1)
-        elif task_id == 1:  # walk backward
-            x_range = (40.0, 80.0)
-            vel_range = (-5.0, 0.0)
-            e.config_hull_reset(x_range=x_range)
-            e.config_cmd_vel(sample_range=vel_range, interp_time=0.5, switch_time=3, zero_prob=0.2)
-            
-            if MIX_IRRELEVANT_INPUT:  # mix in random tilt commands as well
-                e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
-            else:  # reset tilt command to 0 for clean input
-                e.config_cmd_tilt(zero_prob=1)
-        elif task_id == 2:  # flamingo
-            x_range = (20.0, 60.0)
-            e.config_hull_reset(x_range=x_range)
-            
-            if MIX_IRRELEVANT_INPUT:  # mix in random tilt and velocity commands
-                e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
-                e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
-            else:  # reset tilt and velocity command to 0 for clean input
-                e.config_cmd_vel(zero_prob=1)
-                e.config_cmd_tilt(zero_prob=1)
-        elif task_id == 3:  # tilt
-            x_range = (20.0, 60.0)
-            tilt_range = (-0.75, 0.75)
-            e.config_hull_reset(x_range=x_range)
-            e.config_cmd_tilt(sample_range=tilt_range, switch_time=3, interp_time=0.5, zero_prob=0.15)
-            
-            if MIX_IRRELEVANT_INPUT:  # mix in random velocity commands
-                e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
-            else:  # reset velocity command to 0 for clean input
-                e.config_cmd_vel(zero_prob=1)
+    n_tasks = len(cfg.task_names)
 
     def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float, cmd_tilt: float = 0.0) -> np.ndarray:
         # body_tilt expert expects [proprio, cmd_tilt]
@@ -153,7 +110,7 @@ def main():
         return action
 
     def getTaskPMF(t: list[float], k: float):
-        if ADVERSARIAL_TASK_SELECT:
+        if cfg.adversarial_task_select:
             assert 0 <= k <= 1
             w = [max(t) - i for i in t]
             sum_w = sum(w)
@@ -161,55 +118,42 @@ def main():
             P = [U[i] if sum_w == 0 else w[i] / sum_w for i in range(len(t))]
             return [k * p_i + (1 - k) * u_i for p_i, u_i in zip(P, U)]
         else:
-            return [1/len(t)] * len(t)
-
-    # DAgger hyperparams
-    T = 1500  # env steps per iter
-    N = 80  # num iterations to go thru
-    N_ACTIVE = N  # num iterations to sample from (disabled for now, don't need it)
-    EPOCH = 30  # training epochs per iteration
-    BATCH_SIZE = 256
-    LR = 1e-3
-    DECAY = 1e-2
-    SCHED_RESTART_ITERS = 2  # dagger iterations per cosine restart
-    ACT_VAR = 0.5  # action variance during data collection
-    K = 0.85  # how much to prioritize choosing worst task (1 = max, 0 = uniform)
-    T_EVAL = 2000  # eval steps per expert task
-
-    # training settings
-    CKPT_INT = 1  # how many iter before saving a checkpoint
-    BEST_INT = 1  # how many iter before saving a best
+            return [1 / len(t)] * len(t)
 
     loss_fn = nn.MSELoss()
-    optimizer = torch.optim.AdamW(student.parameters(), lr=LR, weight_decay=DECAY)
-    # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=SCHED_RESTART_ITERS * EPOCH, eta_min=5e-4)
+    optimizer = torch.optim.AdamW(student.parameters(), lr=cfg.lr, weight_decay=cfg.decay)
+    scheduler = None
+    if cfg.use_scheduler:
+        scheduler = CosineAnnealingWarmRestarts(
+            optimizer, T_0=cfg.sched_restart_iters * cfg.epoch, eta_min=5e-4
+        )
 
     D: list[tuple[np.ndarray, np.ndarray, int]] = []
 
-    writer = SummaryWriter(log_dir=str(LOGS_DIR / EXPERIMENT_NAME))
+    writer = SummaryWriter(log_dir=str(LOGS_DIR / experiment_name))
     print_run_info(
         student,
         OBS_SIZE_V2,
         ACT_SIZE,
         device,
-        N,
-        T,
-        EPOCH,
-        BATCH_SIZE,
-        LR,
-        DECAY,
-        EXPERIMENT_NAME,
+        cfg.N,
+        cfg.T,
+        cfg.epoch,
+        cfg.batch_size,
+        cfg.lr,
+        cfg.decay,
+        experiment_name,
     )
 
-    # eval routine
+    # eval routine, no noise
     def evaluate(step: int):
         student.eval()
         student.to("cpu")
         task_losses = []
         all_time_alive = []
         with torch.no_grad():
-            for task_id, task_name in enumerate(TASK_NAMES):
-                configureEnv(eval_env, task_id)
+            for task_id, task_name in enumerate(cfg.task_names):
+                configure_env(eval_env, task_id, cfg.mix_irrelevant_input)
                 obs, info = eval_env.reset()
                 cmd_vel = info["cmd"]["x_vel"]
                 cmd_tilt = info["cmd"]["tilt"]
@@ -218,7 +162,7 @@ def main():
                 time_alive = []
                 alive = 0
 
-                for _ in range(T_EVAL):
+                for _ in range(cfg.t_eval):
                     if done:
                         obs, info = eval_env.reset()
                         cmd_vel = info["cmd"]["x_vel"]
@@ -230,7 +174,7 @@ def main():
                         alive += 1
 
                     act_expert = forwardExpert(obs, task_id, cmd_vel, cmd_tilt)
-                    obs_s = StudentModelMLV2.obs(obs, task_id, cmd_vel, cmd_tilt)
+                    obs_s = StudentModel.obs(obs, task_id, cmd_vel, cmd_tilt)
                     pred = student(torch.tensor(obs_s, dtype=torch.float32))
                     target = torch.tensor(act_expert, dtype=torch.float32)
 
@@ -258,26 +202,21 @@ def main():
 
         return (loss_total, avg_time_alive, all_time_alive)
 
-    # create all the necessary folders
-    if not os.path.exists(MODELS_DIR):
-        os.makedirs(MODELS_DIR)
-
-    if not os.path.exists(LOGS_DIR / "distill"):
-        os.makedirs(LOGS_DIR / "distill")
-
-    os.makedirs(MODELS_DIR / EXPERIMENT_NAME, exist_ok=True)
+    # create all the necessary folders (builds the whole rudin[_adv]/distill/x.y.z tree)
+    os.makedirs(MODELS_DIR / experiment_name, exist_ok=True)
+    os.makedirs(LOGS_DIR / experiment_name, exist_ok=True)
 
     # DAgger
     start_time = time.time()
-    bar = tqdm(total=(N * T) + (N * EPOCH), desc="Training", ascii=" ░▒█")
-    best_loss = float("inf")
-    task_live_time = [1.0, 1.0, 1.0, 1.0]
+    bar = tqdm(total=(cfg.N * cfg.T) + (cfg.N * cfg.epoch), desc="Training", ascii=" ░▒█")
+    task_live_time = [1.0] * n_tasks
 
-    for n in range(N):
+    for n in range(cfg.N):
         iter_start = time.time()
         Di: list[tuple[np.ndarray, np.ndarray, int]] = []
 
-        # 1. collect trajectories under current student policy
+        # 1. collect trajectories under current student policy (noisy rollout,
+        #    clean expert labels)
         student.to("cpu")
         student.eval()
         time_alive = []
@@ -285,26 +224,29 @@ def main():
             done = True
             alive = 0
 
-            for _ in range(T):
+            for _ in range(cfg.T):
                 if done:
                     current_task = int(
-                        np.random.choice(4, p=getTaskPMF(task_live_time, K))
+                        np.random.choice(n_tasks, p=getTaskPMF(task_live_time, cfg.adversarial_k))
                     )
-                    configureEnv(env, current_task)
+                    configure_env(env, current_task, cfg.mix_irrelevant_input)
                     obs, info = env.reset()
                     cmd_vel = info["cmd"]["x_vel"]
                     cmd_tilt = info["cmd"]["tilt"]
                     alive = 0
 
+                # CLEAN expert action — saved as the training label
                 act_expert = forwardExpert(obs, current_task, cmd_vel, cmd_tilt)
-                # add zero-mean gaussian noise
-                act_expert += np.random.normal(0, ACT_VAR**0.5, act_expert.shape)
 
-                obs_s = StudentModelMLV2.obs(obs, current_task, cmd_vel, cmd_tilt)
+                obs_s = StudentModel.obs(obs, current_task, cmd_vel, cmd_tilt)
                 act_student = student(torch.tensor(obs_s, dtype=torch.float32)).numpy()
 
+                # additive diagonal gaussian noise on the EXECUTED action only,
+                # for state coverage / exploration (NOT on the saved label, NOT in eval)
+                act_exec = act_student + np.random.normal(0.0, cfg.act_var ** 0.5, act_student.shape)
+
                 alive += 1
-                obs, _, term, trunc, info = env.step(act_student)
+                obs, _, term, trunc, info = env.step(act_exec)
                 cmd_vel = info["cmd"]["x_vel"]
                 cmd_tilt = info["cmd"]["tilt"]
                 done = term or trunc
@@ -320,11 +262,11 @@ def main():
 
         # 3. build training batch, prioritising recent data
         obs_list, act_list, task_ids_all = zip(*D)  # type: ignore
-        if len(D) > N_ACTIVE * T:
+        if cfg.n_active is not None and len(D) > cfg.n_active * cfg.T:
             # linearly increasing weights: oldest sample is around 0, newest = highest
             w = np.arange(1, len(D) + 1, dtype=np.float64)
             w /= w.sum()
-            idx = np.random.choice(len(D), size=N_ACTIVE * T, replace=False, p=w)
+            idx = np.random.choice(len(D), size=cfg.n_active * cfg.T, replace=False, p=w)
             obs_arr = np.array(obs_list)[idx]
             act_arr = np.array(act_list)[idx]
             task_ids_all = tuple(np.array(task_ids_all)[idx])
@@ -336,13 +278,13 @@ def main():
         y_full = torch.tensor(act_arr, dtype=torch.float32)
 
         loader = DataLoader(
-            TensorDataset(x_full, y_full), batch_size=BATCH_SIZE, shuffle=True
+            TensorDataset(x_full, y_full), batch_size=cfg.batch_size, shuffle=True
         )
 
         student.to(device)
         student.train()
 
-        for epoch in range(EPOCH):
+        for epoch in range(cfg.epoch):
             epoch_loss = 0.0
             for obs_batch, act_batch in loader:
                 obs_batch = obs_batch.to(device)
@@ -356,16 +298,17 @@ def main():
                 optimizer.step()
                 epoch_loss += loss.item()
 
-            writer.add_scalar("train/loss", epoch_loss / len(loader), n * EPOCH + epoch)
-            # scheduler.step()
+            writer.add_scalar("train/loss", epoch_loss / len(loader), n * cfg.epoch + epoch)
+            if scheduler is not None:
+                scheduler.step()
             bar.update(1)
 
         # log per-iteration scalars
-        writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], n * EPOCH)
-        writer.add_scalar("train/dataset_size", len(D), n * EPOCH)
+        writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], n * cfg.epoch)
+        writer.add_scalar("train/dataset_size", len(D), n * cfg.epoch)
         if time_alive:
             writer.add_scalar(
-                "train/avg_time_alive", float(np.mean(time_alive)), n * EPOCH
+                "train/avg_time_alive", float(np.mean(time_alive)), n * cfg.epoch
             )
 
         # per-expert training loss on full accumulated dataset
@@ -374,43 +317,33 @@ def main():
         with torch.no_grad():
             pred_all = student(x_full)
             total_D = len(task_ids_all)
-            for task_id, task_name in enumerate(TASK_NAMES):
+            for task_id, task_name in enumerate(cfg.task_names):
                 indices = [i for i, t in enumerate(task_ids_all) if t == task_id]
                 if indices:
                     idx_t = torch.tensor(indices)
                     writer.add_scalar(
                         f"train/loss_{task_name}",
                         F.mse_loss(pred_all[idx_t], y_full[idx_t]).item(),
-                        n * EPOCH,
+                        n * cfg.epoch,
                     )
                 writer.add_scalar(
                     f"train/task_pct_{task_name}",
                     len(indices) / total_D,
-                    n * EPOCH,
+                    n * cfg.epoch,
                 )
 
         # 4. eval
-        eval_loss, _, task_live_time = evaluate(n * EPOCH)
+        _, _, task_live_time = evaluate(n * cfg.epoch)
 
-        # 5. save checkpoints
-        if n % CKPT_INT == 0 or n == N - 1:
+        # 5. save periodic checkpoints
+        if n % cfg.ckpt_int == 0 or n == cfg.N - 1:
             torch.save(
                 {
                     "policy": student.state_dict(),
                     "optimizer": optimizer.state_dict(),
                 },
-                str(MODELS_DIR / EXPERIMENT_NAME / f"distill_{n}.pt"),
+                str(MODELS_DIR / experiment_name / f"distill_{n}.pt"),
             )
-        if n % BEST_INT == 0:
-            if eval_loss < best_loss:  # save best model
-                torch.save(
-                    {
-                        "policy": student.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                    },
-                    str(MODELS_DIR / EXPERIMENT_NAME / f"best.pt"),
-                )
-                best_loss = eval_loss
 
         iter_time = time.time() - iter_start
         iter_per_s = 1.0 / iter_time
@@ -421,6 +354,15 @@ def main():
     bar.close()
     writer.close()
 
+    # save the final model
+    torch.save(
+        {
+            "policy": student.state_dict(),
+            "optimizer": optimizer.state_dict(),
+        },
+        str(MODELS_DIR / experiment_name / "final.pt"),
+    )
+
     duration = fmt_duration(time.time() - start_time)
     print(f"\nDone! Total time: {duration}")
 
@@ -429,7 +371,7 @@ def main():
             [
                 "osascript",
                 "-e",
-                f'display notification "Finished in {duration}" with title "Distillation complete" subtitle "{EXPERIMENT_NAME}"',
+                f'display notification "Finished in {duration}" with title "Distillation complete" subtitle "{experiment_name}"',
             ],
             check=False,
         )
@@ -509,10 +451,24 @@ def play_sound(path):
     pygame.mixer.quit()
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train a DAgger distillation student from a named preset.")
+    parser.add_argument(
+        "--preset",
+        choices=sorted(PRESETS.keys()),
+        default="adversarial",
+        help="which train_config preset to run (default: adversarial)",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
     warnings.filterwarnings(
         "ignore",
         message="__array_wrap__ must accept context and return_scalar arguments",
         category=DeprecationWarning,
     )
-    main()
+    args = parse_args()
+    cfg = PRESETS[args.preset]
+    print(f'Using preset "{args.preset}"  ->  experiment "{cfg.experiment_name}"')
+    main(cfg)

@@ -131,8 +131,14 @@ dmypy.json
 # Save
 models/
 logs/
+.models.old/
+.logs.old/
 save/
 *.pt
+*.npz
+
+# Eval outputs
+scripts/eval/output/*
 
 # VSCode
 .vscode

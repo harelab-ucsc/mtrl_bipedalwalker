@@ -1,13 +1,30 @@
-from typing import OrderedDict, Optional
-from pathlib import Path
+"""
+scripts/rlft/finetune.py
+========================
+
+RL fine-tuning for the Rudin baseline (pure RL, no behavior cloning).
+
+Warm-starts from a pretrained-critic zip (actor + critic, produced by
+scripts/rlft/pretrain_critic.py) and continues training in the same pure-RL
+RlFTEnv, but with the actor unfrozen and **stricter objective clipping + a
+smaller, decaying LR** so RL refines the policy without diverging from the
+distilled start. The network architecture is inherited from the loaded zip.
+
+Saves to ``models/rudin[_adv]/finetuned/<version>/``:
+  - ``best/best_model.zip``     (best by eval reward; what play/compare load)
+  - ``rl_model_*_steps.zip``    (periodic checkpoints; what eval/time_alive loads)
+  - ``final.zip``               (last checkpoint)
+
+Run:  python scripts/rlft/finetune.py --preset switching
+"""
+
+import argparse
+from functools import partial
 
 import gymnasium as gym
-import numpy as np
 import torch
 from stable_baselines3 import PPO
-from tqdm import tqdm
 from stable_baselines3.common.vec_env import SubprocVecEnv
-from stable_baselines3.common.utils import LinearSchedule
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import (
     EvalCallback,
@@ -16,414 +33,128 @@ from stable_baselines3.common.callbacks import (
 )
 from stable_baselines3.common.logger import configure
 
-from datetime import datetime
-import json
 import time
-import os
 import subprocess
-import threading
 
-import pygame
-from pynput import keyboard as kb
-
-from utils.paths import MODELS_DIR, LOGS_DIR, ROOT
+from utils.paths import MODELS_DIR, LOGS_DIR
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
-from wrappers.bipedal_walker.rltf_env import LandscapeConfig, RlFTEnv
-from mdp.bipedal_walker.rlft_policy import RlFTPolicy, _MODEL_CONFIGS
+from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 
-if not os.path.exists(MODELS_DIR):
-    os.makedirs(MODELS_DIR)
-
-if not os.path.exists(LOGS_DIR):
-    os.makedirs(LOGS_DIR)
-
-# =========================================
-
-# --- model & experiment identity ---
-MODEL_SIZE  = "ml"
-CRITIC_SIZE = "xxxl"
-
-# Run controls
-PRETRAIN_FROM_SCRATCH  = True
-RUN_FINETUNE           = True
-STANDARDIZE_LANDSCAPES = False
-
-GAMMA  = 0.975
-LAMBDA = 0.95
-
-# --- paths ---
-DISTILLED_STUDENT        = f"distill/{MODEL_SIZE}/best.pt"
-PRETRAIN_MODEL_SUFFIX    = "_3.4.4"
-PRETRAIN_EXPERIMENT_NAME = f"rlft/pretrain/{MODEL_SIZE}{PRETRAIN_MODEL_SUFFIX}_g{int(GAMMA * 100):02d}"
-FINETUNE_MODEL_SUFFIX    = "_3.4.4"
-FINETUNE_EXPERIMENT_NAME = (
-    f"rlft/finetuned/{MODEL_SIZE}{FINETUNE_MODEL_SUFFIX}"
-    f"_g{int(GAMMA * 100):02d}"
-    f"-{datetime.today().strftime('%H_%M_%S-%Y_%m_%d')}"
-)
-
-# Used when PRETRAIN_FROM_SCRATCH = False:
-PRETRAINED_MODEL_PATH = MODELS_DIR / f"rlft/pretrain/{MODEL_SIZE}{PRETRAIN_MODEL_SUFFIX}_g{int(GAMMA * 100):02d}/best_model"
-
-# Landscape JSON is saved alongside the distilled model (property of that checkpoint).
-# Set LANDSCAPE_JSON_PATH to a previously saved file to skip collection entirely.
-LANDSCAPE_SAVE_PATH: Path             = MODELS_DIR / f"distill/{MODEL_SIZE}/landscape.json"
-LANDSCAPE_JSON_PATH: Optional[Path]   = LANDSCAPE_SAVE_PATH
-
-# --- environment ---
-N_TRAIN_ENVS        = 14
-N_EVAL_ENVS         = 5
-EP_TIME             = 10
-VEL_SAMPLE_RANGE    = (-5, 5)
-VEL_SAMPLE_ZERO     = 0.15
-VEL_SWITCHING_FREQ  = 2
-TASK_SWITCHING_FREQ = 5
-VEL_INTERP_SPEED    = 10.0
-
-# --- data collection hyperparams ---
-N_COLLECT_ENVS        = 14 * 4
-N_LANDSCAPE_STEPS     = 1_000_000  # step rewards per task for mean/variance estimation
-
-# --- pretraining hyperparams ---
-PRETRAIN_TIMESTEPS    = 200 * 1024 * N_TRAIN_ENVS
-PRETRAIN_LR           = 1e-3
-PRETRAIN_N_EPOCHS     = 10
-PRETRAIN_N_STEPS      = 1024
-PRETRAIN_BATCH_SIZE   = 512
-PRETRAIN_ENT_COEF     = 0.0
-PRETRAIN_VF_COEF      = 1.0
-PRETRAIN_INIT_LOG_STD = np.log(0.7)
-
-# --- finetuning hyperparams ---
-FINETUNE_TIMESTEPS      = 200 * 1024 * N_TRAIN_ENVS
-FINETUNE_LR_START       = 2e-5
-FINETUNE_LR_END         = 8e-6
-FINETUNE_LR_FRACTION    = 0.5
-FINETUNE_N_EPOCHS       = 25
-FINETUNE_N_STEPS        = 1024
-FINETUNE_BATCH_SIZE     = 64
-FINETUNE_ENT_COEF       = 0.006
-FINETUNE_CLIP_RANGE     = 0.1
-FINETUNE_INIT_LOG_STD   = np.log(1.0)
+from finetune_config import PRESETS, FinetuneConfig
 
 # =========================================
 
 
-def make_env(landscape_config: Optional[LandscapeConfig] = None):
+def make_env(cfg: FinetuneConfig):
     env = gym.make("BipedalWalker-v3")
     env = Monitor(
         RlFTEnv(
             env,
-            ep_time=EP_TIME,
-            vel_sample_range=VEL_SAMPLE_RANGE,
-            vel_sample_zero=VEL_SAMPLE_ZERO,
-            vel_switching_freq=VEL_SWITCHING_FREQ,
-            vel_interp_speed=VEL_INTERP_SPEED,
-            task_switching_freq=TASK_SWITCHING_FREQ,
-            landscape_correction=landscape_config or {},
+            ep_time=cfg.ep_time,
+            cmd_switching_time=cfg.cmd_switching_time,
+            task_switching_time=cfg.task_switching_time,
+            cmd_interp_speed=cfg.cmd_interp_speed,
+            cmd_sample_range=cfg.cmd_sample_range,
+            cmd_sample_zero=cfg.cmd_sample_zero,
+            allowed_task_mixing=cfg.allowed_task_mixing,
+            use_rew_for_individual_tasks=cfg.use_indv_task_rew,
+            hull_x_range=cfg.hull_x_range,
         )
     )
     return env
 
 
-def main():
-    assert PRETRAIN_FROM_SCRATCH or RUN_FINETUNE, "nothing to do"
+def main(cfg: FinetuneConfig):
+    pretrained = cfg.pretrained_ckpt
+    assert pretrained.exists(), f"pretrained critic zip not found: {pretrained}"
 
-    t0 = time.time()
+    experiment_name = cfg.experiment_name
 
-    landscape_cfg: Optional[LandscapeConfig] = None
-    if STANDARDIZE_LANDSCAPES:
-        if LANDSCAPE_JSON_PATH is not None and LANDSCAPE_JSON_PATH.exists():
-            landscape_cfg = load_landscape_data(LANDSCAPE_JSON_PATH, t0)
-        else:
-            landscape_cfg = collect_landscape_data(t0)
+    print("Loading environments...")
+    env_fn = partial(make_env, cfg)
+    train_env = SubprocVecEnv([env_fn for _ in range(cfg.n_train_envs)])
+    eval_env = SubprocVecEnv([env_fn for _ in range(cfg.n_eval_envs)])
 
-    if PRETRAIN_FROM_SCRATCH:
-        pretrained_path = run_pretraining(t0, landscape_cfg)
-    else:
-        pretrained_path = PRETRAINED_MODEL_PATH
-
-    if RUN_FINETUNE:
-        run_finetuning(pretrained_path, t0, landscape_cfg)
-
-
-def collect_landscape_data(t0: float) -> LandscapeConfig:
-    print(f"[{(time.time() - t0):.2f}s] Loading distilled actor for landscape collection...")
-    student_path = MODELS_DIR / DISTILLED_STUDENT
-    student_sd: OrderedDict = torch.load(student_path, map_location="cpu", weights_only=False)["policy"]
-    layer_idx = [int(k.split(".")[1]) for k in list(student_sd.keys())[::2]]
-
-    # load in layer weights and bias
-    layers: list[torch.nn.Module] = []
-    for i, idx in enumerate(layer_idx):
-        w = student_sd[f"policy.{idx}.weight"]
-        b = student_sd[f"policy.{idx}.bias"]
-        lin = torch.nn.Linear(w.shape[1], w.shape[0])
-        lin.weight.data.copy_(w)
-        lin.bias.data.copy_(b)
-        layers.append(lin)
-        if i < len(layer_idx) - 1:
-            layers.append(torch.nn.ELU())
-    actor = torch.nn.Sequential(*layers)
-    actor.eval()
-
-    print(f"[{(time.time() - t0):.2f}s] Spinning up {N_COLLECT_ENVS} envs ({N_LANDSCAPE_STEPS:,} steps/task)...")
-    vec_env = SubprocVecEnv([make_env for _ in range(N_COLLECT_ENVS)])
-
-    walk_rew: list[float] = []
-    hop_rew:  list[float] = []
-    obs = vec_env.reset()
-
-    pbar = tqdm(total=N_LANDSCAPE_STEPS * 2, unit="steps", desc="Collecting landscape")
-    prev = 0
-
-    # collect all data
-    with torch.no_grad():
-        while len(walk_rew) < N_LANDSCAPE_STEPS or len(hop_rew) < N_LANDSCAPE_STEPS:
-            obs_t   = torch.as_tensor(obs, dtype=torch.float32)
-            actions = np.clip(actor(obs_t).numpy(), -1.0, 1.0)
-            obs, _, _, infos = vec_env.step(actions)
-
-            for i in range(N_COLLECT_ENVS):
-                task = infos[i]["task"]  # modular against different landscapes. But when applying correction, landscape keys must match.
-                r    = float(infos[i]["task_reward_raw"])
-                if task == 0 and len(walk_rew) < N_LANDSCAPE_STEPS:
-                    walk_rew.append(r)
-                elif task == 1 and len(hop_rew) < N_LANDSCAPE_STEPS:
-                    hop_rew.append(r)
-
-            curr = min(len(walk_rew), N_LANDSCAPE_STEPS) + min(len(hop_rew), N_LANDSCAPE_STEPS)
-            pbar.update(curr - prev)
-            prev = curr
-
-    pbar.close()
-    vec_env.close()
-
-    walk_arr = np.array(walk_rew)
-    hop_arr  = np.array(hop_rew)
-    cfg: LandscapeConfig = {
-        "walk": (float(walk_arr.mean()), float(walk_arr.var())),
-        "hop":  (float(hop_arr.mean()),  float(hop_arr.var())),
-    }
-
-    print(f"[{(time.time() - t0):.2f}s] Landscape stats:")
-    print(f"    walk  μ={cfg['walk'][0]:.4f}  σ²={cfg['walk'][1]:.4f}")
-    print(f"    hop   μ={cfg['hop'][0]:.4f}  σ²={cfg['hop'][1]:.4f}")
-
-    def _task_stats(arr: np.ndarray) -> dict:
-        return {
-            "mean":   float(arr.mean()),
-            "var":    float(arr.var()),
-            "std":    float(arr.std()),
-            "min":    float(arr.min()),
-            "max":    float(arr.max()),
-            "p5":     float(np.percentile(arr, 5)),
-            "p25":    float(np.percentile(arr, 25)),
-            "median": float(np.median(arr)),
-            "p75":    float(np.percentile(arr, 75)),
-            "p95":    float(np.percentile(arr, 95)),
-            "n":      int(len(arr)),
-        }
-
-    payload = {
-        "walk": _task_stats(walk_arr),
-        "hop":  _task_stats(hop_arr),
-        "meta": {
-            "model":           DISTILLED_STUDENT,
-            "n_landscape_steps": N_LANDSCAPE_STEPS,
-            "n_collect_envs":  N_COLLECT_ENVS,
-            "collected_at":    datetime.now().isoformat(timespec="seconds"),
-        },
-    }
-
-    LANDSCAPE_SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(LANDSCAPE_SAVE_PATH, "w") as f:
-        json.dump(payload, f, indent=2)
-    print(f"[{(time.time() - t0):.2f}s] Saved landscape to {LANDSCAPE_SAVE_PATH}")
-
-    return cfg
-
-
-def load_landscape_data(path: Path, t0: float) -> LandscapeConfig:
-    print(f"[{(time.time() - t0):.2f}s] Loading landscape from {path}...")
-    with open(path) as f:
-        raw = json.load(f)
-    cfg: LandscapeConfig = {  # type: ignore
-        "walk": (float(raw["walk"]["mean"]), float(raw["walk"]["var"])),
-        "hop":  (float(raw["hop"]["mean"]),  float(raw["hop"]["var"])),
-    }
-    print(f"    walk  μ={cfg['walk'][0]:.4f}  σ²={cfg['walk'][1]:.4f}")
-    print(f"    hop   μ={cfg['hop'][0]:.4f}  σ²={cfg['hop'][1]:.4f}")
-    return cfg
-
-
-def run_pretraining(t0: float, landscape_cfg: Optional[LandscapeConfig] = None) -> Path:
-    print(f"[{(time.time() - t0):.2f}s] Loading environments...")
-    env_fn    = (lambda: make_env(landscape_cfg)) if landscape_cfg else make_env
-    train_env = SubprocVecEnv([env_fn for _ in range(N_TRAIN_ENVS)])
-    eval_env  = SubprocVecEnv([env_fn for _ in range(N_EVAL_ENVS)])
-
-    print(f"[{(time.time() - t0):.2f}s] Creating model...")
-    hidden_dims        = _MODEL_CONFIGS[MODEL_SIZE]
-    critic_hidden_dims = _MODEL_CONFIGS[CRITIC_SIZE]
-    model = PPO(
-        RlFTPolicy,
-        env=train_env,
-        policy_kwargs=dict(hidden_dims=hidden_dims, critic_hidden_dims=critic_hidden_dims, activation_fn=torch.nn.ELU),
-        learning_rate=PRETRAIN_LR,
-        n_epochs=PRETRAIN_N_EPOCHS,
-        n_steps=PRETRAIN_N_STEPS,
-        batch_size=PRETRAIN_BATCH_SIZE,
-        ent_coef=PRETRAIN_ENT_COEF,
-        vf_coef=PRETRAIN_VF_COEF,
-        clip_range=FINETUNE_CLIP_RANGE,
-        gamma=GAMMA,
-        gae_lambda=LAMBDA,
-    )
-
-    print(f"[{(time.time() - t0):.2f}s] Preloading policy...")
-    student_path = MODELS_DIR / DISTILLED_STUDENT
-    student_sd: OrderedDict = torch.load(
-        student_path, map_location="cpu", weights_only=False
-    )["policy"]
-    layer_idx = [int(i.split(".")[1]) for i in list(student_sd.keys())[::2]]
-
-    sb3_policy = model.policy
-    mlp_ext    = sb3_policy.mlp_extractor
-    action_net = sb3_policy.action_net
-
-    with torch.no_grad():
-        for idx in layer_idx[:-1]:
-            mlp_ext.policy_net[idx].weight.copy_(student_sd[f"policy.{idx}.weight"])  # type: ignore
-            mlp_ext.policy_net[idx].bias.copy_(student_sd[f"policy.{idx}.bias"])      # type: ignore
-        action_net.weight.copy_(student_sd[f"policy.{layer_idx[-1]}.weight"])  # type: ignore
-        action_net.bias.copy_(student_sd[f"policy.{layer_idx[-1]}.bias"])      # type: ignore
-
-    for p in mlp_ext.policy_net.parameters():
-        p.requires_grad_(False)
-    for p in action_net.parameters():
-        p.requires_grad_(False)
-    with torch.no_grad():
-        model.policy.log_std.fill_(PRETRAIN_INIT_LOG_STD)
-    sb3_policy.log_std.requires_grad_(False)
-
-    print(f"[{(time.time() - t0):.2f}s] Configuring logger...")
-    model.set_logger(configure(str(LOGS_DIR / PRETRAIN_EXPERIMENT_NAME), ["tensorboard"]))
-    train_env.reset()
-
-    eval_cb = EvalCallback(
-        eval_env,
-        best_model_save_path=f"{MODELS_DIR}/{PRETRAIN_EXPERIMENT_NAME}",
-        eval_freq=max(50000 // N_TRAIN_ENVS, 1),
-        n_eval_episodes=5,
-        verbose=0,
-    )
-    ckpt_cb = CheckpointCallback(
-        save_freq=max(500000 // N_TRAIN_ENVS, 1),
-        save_path=f"{MODELS_DIR}/{PRETRAIN_EXPERIMENT_NAME}/",
-    )
-
-    print_run_info(train_env, model, PRETRAIN_EXPERIMENT_NAME, phase="pretraining", landscape_cfg=landscape_cfg)
-
-    print(f"[{(time.time() - t0):.2f}s] Starting pretraining ({PRETRAIN_TIMESTEPS:,} timesteps)...")
-    start = time.time()
-    model.learn(
-        total_timesteps=PRETRAIN_TIMESTEPS,
-        callback=CallbackList([StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]),
-        progress_bar=True,
-    )
-
-    duration = fmt_duration(time.time() - start)
-    print(f"[{(time.time() - t0):.2f}s] Pretraining done. Total time: {duration}")
-    subprocess.run(
-        [
-            "osascript", "-e",
-            f'display notification "Finished in {duration}" with title "Pretraining complete" subtitle "{PRETRAIN_EXPERIMENT_NAME}"',
-        ],
-        check=False,
-    )
-
-    print(f"[{(time.time() - t0):.2f}s] Cleaning up pretraining resources...")
-    train_env.close()
-    eval_env.close()
-    del model, train_env, eval_env
-
-    return MODELS_DIR / f"{PRETRAIN_EXPERIMENT_NAME}" / "best_model.zip"
-
-
-def run_finetuning(pretrained_path: Path, t0: float, landscape_cfg: Optional[LandscapeConfig] = None) -> None:
-    print(f"[{(time.time() - t0):.2f}s] Loading environments...")
-    env_fn    = (lambda: make_env(landscape_cfg)) if landscape_cfg else make_env
-    train_env = SubprocVecEnv([env_fn for _ in range(N_TRAIN_ENVS)])
-    eval_env  = SubprocVecEnv([env_fn for _ in range(N_EVAL_ENVS)])
-
-    print(f"[{(time.time() - t0):.2f}s] Loading pretrained model from {pretrained_path}...")
+    print(f"Loading pretrained critic from {pretrained}...")
+    # custom_objects overrides the pretrain-time PPO hyperparams with the
+    # fine-tune ones (tighter clip, lower LR, etc.). The policy/critic weights
+    # come from the zip; the actor is trainable again after a fresh policy build.
     model = PPO.load(
-        pretrained_path,
+        pretrained,
         env=train_env,
+        device=cfg.device,
         custom_objects={
-            "learning_rate": LinearSchedule(FINETUNE_LR_START, FINETUNE_LR_END, FINETUNE_LR_FRACTION),
-            "n_epochs":      FINETUNE_N_EPOCHS,
-            "n_steps":       FINETUNE_N_STEPS,
-            "batch_size":    FINETUNE_BATCH_SIZE,
-            "ent_coef":      FINETUNE_ENT_COEF,
-            "gamma":         GAMMA,
-            "gae_lambda":    LAMBDA,
+            "learning_rate": cfg.learning_rate,
+            "clip_range": cfg.clip_range,
+            "n_epochs": cfg.n_epochs,
+            "n_steps": cfg.n_steps,
+            "batch_size": cfg.batch_size,
+            "ent_coef": cfg.ent_coef,
+            "vf_coef": cfg.vf_coef,
+            "gamma": cfg.gamma,
+            "gae_lambda": cfg.gae_lambda,
+            "max_grad_norm": cfg.max_grad_norm,
         },
     )
 
-    print(f"[{(time.time() - t0):.2f}s] Reinitializing log_std...")
-    with torch.no_grad():
-        model.policy.log_std.fill_(FINETUNE_INIT_LOG_STD)
+    if cfg.init_log_std is not None:
+        with torch.no_grad():
+            model.policy.log_std.fill_(cfg.init_log_std)
 
-    print(f"[{(time.time() - t0):.2f}s] Configuring logger...")
-    model.set_logger(configure(str(LOGS_DIR / FINETUNE_EXPERIMENT_NAME), ["tensorboard"]))
+    model.set_logger(configure(str(LOGS_DIR / experiment_name), ["tensorboard"]))
     train_env.reset()
 
     eval_cb = EvalCallback(
         eval_env,
-        best_model_save_path=f"{MODELS_DIR}/{FINETUNE_EXPERIMENT_NAME}/best",
-        eval_freq=max(50000 // N_TRAIN_ENVS, 1),
+        best_model_save_path=f"{MODELS_DIR}/{experiment_name}/best",
+        eval_freq=max(50000 // train_env.num_envs, 1),
         n_eval_episodes=5,
         verbose=0,
     )
     ckpt_cb = CheckpointCallback(
-        save_freq=max(500000 // N_TRAIN_ENVS, 1),
-        save_path=f"{MODELS_DIR}/{FINETUNE_EXPERIMENT_NAME}/",
+        save_freq=max(100000 // train_env.num_envs, 1),
+        save_path=f"{MODELS_DIR}/{experiment_name}/",
     )
 
-    print_run_info(train_env, model, FINETUNE_EXPERIMENT_NAME, phase="finetuning", landscape_cfg=landscape_cfg)
+    print_run_info(cfg, train_env, model, experiment_name, pretrained)
 
-    print(f"[{(time.time() - t0):.2f}s] Starting finetuning ({FINETUNE_TIMESTEPS:,} timesteps)...")
+    print(f"Starting fine-tuning ({cfg.timesteps:,} timesteps)...")
     start = time.time()
     model.learn(
-        total_timesteps=FINETUNE_TIMESTEPS,
+        total_timesteps=cfg.timesteps,
         reset_num_timesteps=True,
-        callback=CallbackList([StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]),
+        callback=CallbackList(
+            [StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]
+        ),
         progress_bar=True,
     )
 
+    model.save(f"{MODELS_DIR}/{experiment_name}/final")
+
     duration = fmt_duration(time.time() - start)
-    print(f"[{(time.time() - t0):.2f}s] Finetuning done. Total time: {duration}")
-    print(f"Experiment name: {FINETUNE_EXPERIMENT_NAME}")
-    subprocess.run(
-        [
-            "osascript", "-e",
-            f'display notification "Finished in {duration}" with title "Finetuning complete" subtitle "{FINETUNE_EXPERIMENT_NAME}"',
-        ],
-        check=False,
-    )
-    play_sound(ROOT / "assets" / "train_finish.mp3")
+    print(f"Done! Total time: {duration}")
+    print(f"Experiment name: {experiment_name}")
+
+    try:
+        subprocess.run(
+            [
+                "osascript", "-e",
+                f'display notification "Finished in {duration}" with title "RLFT fine-tune complete" subtitle "{experiment_name}"',
+            ],
+            check=False,
+        )
+    except FileNotFoundError:
+        pass  # not on macOS
 
     train_env.close()
     eval_env.close()
 
 
-def print_run_info(env, model, experiment_name: str, phase: str, landscape_cfg: Optional[LandscapeConfig] = None) -> None:
+def print_run_info(cfg, env, model, experiment_name, pretrained):
     env_id = env.get_attr("spec")[0].id
     obs = env.observation_space
     act = env.action_space
-    p   = model.policy
+    p = model.policy
 
     def section(title, lines):
         print(f"\n  {title}")
@@ -431,91 +162,94 @@ def print_run_info(env, model, experiment_name: str, phase: str, landscape_cfg: 
         for line in lines:
             print(f"    {line}")
 
+    def task_name(t) -> str:
+        name = getattr(t, "name", None)
+        if name is not None:
+            return name
+        bits = tuple(int(x) for x in t)
+        return "+".join(q for b, q in zip(bits, ("walk", "flamingo", "tilt")) if b) or "idle"
+
+    def lr_desc(lr) -> str:
+        if callable(lr):
+            return f"sched {lr(1.0):.1e} -> {lr(0.0):.1e}"
+        return f"{lr:.1e}"
+
+    def switch_desc(t: float) -> str:
+        return f"{t}s" if t < cfg.ep_time else f"{t}s (off, >= ep_time)"
+
     print(f"\n{'=' * 44}")
-    print(f"  {phase:<20} {experiment_name}")
-    if phase == "pretraining":
-        print(f"  frozen policy        {DISTILLED_STUDENT}")
-        print(f"  Note: actor is frozen; only the value network trains.")
-    else:
-        print(f"  pretrained model     {PRETRAINED_MODEL_PATH if not PRETRAIN_FROM_SCRATCH else f'{PRETRAIN_EXPERIMENT_NAME}'}")
+    print(f"  finetune         {experiment_name}")
+    print(f"  pretrained from  {pretrained}")
     print(f"{'=' * 44}")
 
+    cmd_vel_sw, cmd_tilt_sw = cfg.cmd_switching_time
     section(
         "environment",
         [
             f"{env.num_envs}x  {env_id}",
             f"obs  {obs.shape}  {obs.dtype}",
             f"act  {act.shape}  [{act.low[0]:.1f}, {act.high[0]:.1f}]",
+            f"ep_time             {cfg.ep_time}s",
+            f"cmd_switch vel/tilt {switch_desc(cmd_vel_sw)} / {switch_desc(cmd_tilt_sw)}",
+            f"task_switch         {switch_desc(cfg.task_switching_time)}",
+            f"tasks               {', '.join(task_name(t) for t in cfg.allowed_task_mixing)}",
+            f"use_indv_task_rew   {cfg.use_indv_task_rew}",
         ],
     )
 
     section(
-        "policy",
+        "ppo (fine-tune)",
         [
             f"device            {model.device}",
+            f"lr                {lr_desc(cfg.learning_rate)}",
+            f"clip_range        {cfg.clip_range}",
             f"n_steps           {model.n_steps}",
             f"batch_size        {model.batch_size}",
             f"n_epochs          {model.n_epochs}",
-            f"gamma             {model.gamma}",
-            f"lambda            {model.gae_lambda}",
-            f"clip_range        {model.clip_range}",
-            f"target_kl         {model.target_kl}",
-            f"entropy_coef      {model.ent_coef}",
-            f"stats_win_size    {model._stats_window_size}",
-            f"lr                {model.learning_rate}",
-            f"seed              {model.seed}",
+            f"gamma / lambda    {model.gamma} / {model.gae_lambda}",
+            f"vf_coef / ent     {model.vf_coef} / {model.ent_coef}",
+            f"init_log_std      {cfg.init_log_std}",
         ],
     )
 
     def net_summary(net):
         return " -> ".join(str(l.out_features) for l in net if hasattr(l, "out_features"))
 
-    actor   = net_summary(p.mlp_extractor.policy_net)
-    critic  = net_summary(p.mlp_extractor.value_net)
-    act_out = p.action_net.out_features
+    actor = net_summary(p.mlp_extractor.policy_net)
+    critic = net_summary(p.mlp_extractor.value_net)
     section(
-        "network",
+        "network (from zip)",
         [
-            f"actor   in → {actor} → {act_out}",
-            f"critic  in → {critic} → 1",
+            f"actor   in -> {actor} -> {p.action_net.out_features}",
+            f"critic  in -> {critic} -> 1",
         ],
     )
-
-    if landscape_cfg:
-        section(
-            "landscape correction  (r - μ) / σ",
-            [
-                f"walk    μ={landscape_cfg['walk'][0]:+.4f}  σ={landscape_cfg['walk'][1] ** 0.5:.4f}",
-                f"hop     μ={landscape_cfg['hop'][0]:+.4f}  σ={landscape_cfg['hop'][1] ** 0.5:.4f}",
-            ],
-        )
-    else:
-        section("landscape correction", ["none"])
 
     print(f"\n{'=' * 44}\n")
 
 
-def play_sound(path):
-    pygame.mixer.init()
-    pygame.mixer.music.load(str(path))
-    pygame.mixer.music.play()
-    print("Tip: Press Esc to stop the sound.")
-
-    stop = threading.Event()
-
-    def on_press(key):
-        if key == kb.Key.esc:
-            stop.set()
-
-    listener = kb.Listener(on_press=on_press)
-    listener.start()
-    while pygame.mixer.music.get_busy() and not stop.is_set():
-        time.sleep(0.1)
-    listener.stop()
-
-    pygame.mixer.music.stop()
-    pygame.mixer.quit()
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="RL fine-tune a Rudin-baseline critic-pretrained model.")
+    parser.add_argument(
+        "--preset",
+        choices=sorted(PRESETS.keys()),
+        default="switching",
+        help="which finetune_config preset to run (default: switching)",
+    )
+    parser.add_argument(
+        "--timesteps",
+        type=int,
+        default=None,
+        help="override cfg.timesteps (useful for quick smoke tests)",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    cfg = PRESETS[args.preset]
+    if args.timesteps is not None:
+        from dataclasses import replace
+        cfg = replace(cfg, timesteps=args.timesteps)
+    print(f"Using preset: {args.preset}  ->  experiment {cfg.experiment_name}")
+    main(cfg)

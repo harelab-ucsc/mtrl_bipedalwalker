@@ -2,40 +2,23 @@
 ppo_bc_sb3.ppo.ppo_bc
 =====================
 
-mirrors stable_baselines3.ppo.ppo.PPO, renamed to PPO_BC, with train() split
-into smaller methods so it is easy to add:
+PPO clipped surrogate + behavior-cloning auxiliary loss with DAgger expert
+relabeling. The hybrid objective per minibatch is
 
-    - a behavior cloning (bc) loss term inside _compute_policy_loss or
-      _compute_total_loss,
-    - a dagger relabeling loop wired in via the OnPolicyAlgorithm hooks
-      (see ppo_bc_sb3.common.on_policy_algorithm._predict_actions).
+    L = L_PPO + bc_coef * L_BC + vf_coef * L_V + ent_coef * L_H
 
-train() outer flow per call (one rollout has just been collected):
+with L_BC = -E_{(s, a_E) ~ D}[ log pi_theta(a_E | s) ], where D is the
+aggregated demo buffer built by OnPolicyAlgorithm via expert relabeling
+(see arxiv 2212.11419 for the SAC-based original formulation).
 
-    set_training_mode(True)
-    _update_learning_rate(optimizer)
-    clip_range = self.clip_range(progress)
-    for epoch in n_epochs:
-        for batch in rollout_buffer.get(batch_size):
-            advantages = _compute_advantages(batch)
-            values, log_prob, entropy = policy.evaluate_actions(obs, actions)
-            ratio = _compute_ratio(log_prob, batch.old_log_prob)
-            policy_loss, clip_fraction = _compute_policy_loss(advantages, ratio, clip_range)
-            value_loss = _compute_value_loss(values, batch.old_values, batch.returns, clip_range_vf)
-            entropy_loss = _compute_entropy_loss(entropy, log_prob)
-            loss = _compute_total_loss(policy_loss, value_loss, entropy_loss)
-            approx_kl = _compute_approx_kl(log_prob, batch.old_log_prob)
-            if early_stop_on_kl: break
-            _optimization_step(loss)   # zero_grad + backward + clip + step
-        self._n_updates += 1
-
-at the bottom there's a thin load_expert() helper that returns an sb3 PPO model
-ready to be polled inside the dagger hook on the collect side. it's just a
-wrapper around stable_baselines3.PPO.load with eval mode set.
+load_expert() at the bottom is a thin SB3 PPO loader for use inside expert
+callables passed to OnPolicyAlgorithm.
 """
 
 from __future__ import annotations
 
+import io
+import pathlib
 import warnings
 from typing import Any, ClassVar, TypeVar
 
@@ -54,23 +37,30 @@ from stable_baselines3.common.utils import FloatSchedule, explained_variance
 from torch.nn import functional as F
 
 from ppo_bc_sb3.common.buffers import RolloutBuffer
-from ppo_bc_sb3.common.on_policy_algorithm import OnPolicyAlgorithm
+from ppo_bc_sb3.common.on_policy_algorithm import ExpertFn, OnPolicyAlgorithm
+from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 
 SelfPPO_BC = TypeVar("SelfPPO_BC", bound="PPO_BC")
 
 
 class PPO_BC(OnPolicyAlgorithm):
-    """
-    Proximal Policy Optimization (clip variant), prepared for adding a behavior
-    cloning loss term and dagger relabeling. Constructor signature and defaults
-    match stable_baselines3.ppo.PPO exactly so existing call sites translate
-    one-for-one.
+    """PPO (clip) with a BC auxiliary loss fed by DAgger expert relabeling.
 
-    See stable_baselines3.ppo.ppo.PPO for the per-parameter docs.
+    See ``stable_baselines3.ppo.ppo.PPO`` for per-parameter docs of the inherited
+    PPO args. DAgger / BC specific args:
+
+    * ``experts``, ``task_bits``, ``act_var_floor``, ``dagger_max_size``:
+      see ``OnPolicyAlgorithm``.
+    * ``bc_coef``: weight on the BC loss term in the total loss.
+    * ``bc_batch_size``: minibatch size sampled from the DAgger buffer per BC
+      loss eval. Defaults to ``batch_size`` (the PPO minibatch size).
+    * ``bc_loss_type``: ``"nll"`` for the negative-log-likelihood BC loss
+      (default), or ``"mse"`` to regress the policy's deterministic action onto
+      the expert action.
     """
 
-    # default policy aliases. callers can also pass a class directly (we will
-    # pass PpoBcPolicy from train.py).
+    BC_LOSS_TYPES: ClassVar[tuple[str, ...]] = ("nll", "mse")
+
     policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
         "MlpPolicy": ActorCriticPolicy,
         "CnnPolicy": ActorCriticCnnPolicy,
@@ -81,6 +71,9 @@ class PPO_BC(OnPolicyAlgorithm):
         self,
         policy: str | type[ActorCriticPolicy],
         env: GymEnv | str,
+        experts: dict[str, ExpertFn],
+        task_bits: int,
+        act_var_floor: float = 0.0,
         learning_rate: float | Schedule = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 64,
@@ -91,6 +84,15 @@ class PPO_BC(OnPolicyAlgorithm):
         clip_range_vf: None | float | Schedule = None,
         normalize_advantage: bool = True,
         ent_coef: float = 0.0,
+        bc_coef: float = 0.1,
+        bc_batch_size: int | None = None,
+        bc_loss_type: str = "nll",
+        collect_data: bool = True,
+        adversarial_ag: bool = False,
+        adversarial_eval_env: RlFTEnv | None = None,
+        adversarial_eval_steps_per_task: int = 10000,
+        adversarial_k: float = 0.85,
+        dagger_max_size: int | None = None,
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         use_sde: bool = False,
@@ -109,15 +111,25 @@ class PPO_BC(OnPolicyAlgorithm):
         super().__init__(
             policy,
             env,
+            experts=experts,
+            task_bits=task_bits,
+            act_var_floor=act_var_floor,
             learning_rate=learning_rate,
             n_steps=n_steps,
             gamma=gamma,
             gae_lambda=gae_lambda,
             ent_coef=ent_coef,
+            bc_coef=bc_coef,
             vf_coef=vf_coef,
             max_grad_norm=max_grad_norm,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
+            collect_data=collect_data,
+            adversarial_ag=adversarial_ag,
+            adversarial_eval_env=adversarial_eval_env,
+            adversarial_eval_steps_per_task=adversarial_eval_steps_per_task,
+            adversarial_k=adversarial_k,
+            dagger_max_size=dagger_max_size,
             rollout_buffer_class=rollout_buffer_class,
             rollout_buffer_kwargs=rollout_buffer_kwargs,
             stats_window_size=stats_window_size,
@@ -135,19 +147,16 @@ class PPO_BC(OnPolicyAlgorithm):
             ),
         )
 
-        # advantage normalization breaks with batch size 1.
         if normalize_advantage:
             assert (
                 batch_size > 1
-            ), "`batch_size` must be greater than 1. See https://github.com/DLR-RM/stable-baselines3/issues/440"
+            ), "`batch_size` must be > 1 — see https://github.com/DLR-RM/stable-baselines3/issues/440"
 
         if self.env is not None:
-            # sanity check on n_steps * n_envs vs batch_size, same warning shape
-            # as sb3 so user expectations carry over.
             buffer_size = self.env.num_envs * self.n_steps
             assert buffer_size > 1 or (
                 not normalize_advantage
-            ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
+            ), f"`n_steps * n_envs` must be > 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
             untruncated_batches = buffer_size // batch_size
             if buffer_size % batch_size > 0:
                 warnings.warn(
@@ -164,28 +173,76 @@ class PPO_BC(OnPolicyAlgorithm):
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
         self.target_kl = target_kl
+        # default BC minibatch to the PPO minibatch size unless overridden.
+        self.bc_batch_size = bc_batch_size if bc_batch_size is not None else batch_size
+        assert bc_loss_type in self.BC_LOSS_TYPES, (
+            f"`bc_loss_type` must be one of {self.BC_LOSS_TYPES}, got {bc_loss_type!r}"
+        )
+        self.bc_loss_type = bc_loss_type
 
         if _init_setup_model:
             self._setup_model()
 
     def _setup_model(self) -> None:
-        # turn float clip ranges into schedules so we can interpolate over the
-        # course of training. matches sb3 behavior.
         super()._setup_model()
+        # promote float clip ranges to schedules so they can be evaluated on
+        # current_progress_remaining each train() call.
         self.clip_range = FloatSchedule(self.clip_range)
         if self.clip_range_vf is not None:
             if isinstance(self.clip_range_vf, (float, int)):
-                assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
+                assert self.clip_range_vf > 0, (
+                    "`clip_range_vf` must be positive; pass `None` to deactivate vf clipping"
+                )
             self.clip_range_vf = FloatSchedule(self.clip_range_vf)
+            
+    @classmethod
+    def load(  # type: ignore[override]
+        cls: type[SelfPPO_BC],
+        path: str | pathlib.Path | io.BufferedIOBase,
+        experts: dict[str, ExpertFn],
+        task_bits: int,
+        env: GymEnv | None = None,
+        device: th.device | str = "auto",
+        custom_objects: dict[str, Any] | None = None,
+        print_system_info: bool = False,
+        force_reset: bool = True,
+        **kwargs,
+    ) -> SelfPPO_BC:
+        """Inject experts + task_bits (not pickled) and defer to SB3's loader.
 
-    # ------------------------------------------------------------------
-    # loss + optimization helpers
-    #
-    # these are the methods you most likely want to edit to add the bc loss.
-    # the natural insertion point is _compute_policy_loss (mix the bc term in
-    # with the clipped surrogate) or _compute_total_loss (add as a separate
-    # term with its own coefficient).
-    # ------------------------------------------------------------------
+        BaseAlgorithm.load builds the model with ``cls(policy=..., env=..., device=..., _init_setup_model=False)``
+        and ``PPO_BC.__init__`` requires experts/task_bits. We patch __init__
+        for the duration of the super().load() call to supply them.
+        """
+        orig_init = cls.__init__
+
+        def patched_init(self, *a, **kw):
+            kw.setdefault("experts", experts)
+            kw.setdefault("task_bits", task_bits)
+            orig_init(self, *a, **kw)
+
+        cls.__init__ = patched_init  # type: ignore[method-assign]
+        try:
+            model = super().load(
+                path,
+                env=env,
+                device=device,
+                custom_objects=custom_objects,
+                print_system_info=print_system_info,
+                force_reset=force_reset,
+                **kwargs,
+            )
+        finally:
+            cls.__init__ = orig_init  # type: ignore[method-assign]
+
+        # super().load() does __dict__.update(data) which may stomp the
+        # experts/task_bits we just injected (they're in _excluded_save_params,
+        # but be defensive).
+        model.experts = experts
+        model.task_bits = task_bits
+        return model
+
+    # ---- loss + optimization helpers ---------------------------------------
 
     def _compute_advantages(self, rollout_data) -> th.Tensor:
         """
@@ -208,31 +265,38 @@ class PPO_BC(OnPolicyAlgorithm):
     def _compute_policy_loss(
         self, advantages: th.Tensor, ratio: th.Tensor, clip_range: float
     ) -> tuple[th.Tensor, float]:
-        """
-        clipped surrogate objective from the ppo paper. returns the scalar
-        policy loss and the fraction of samples for which the ratio was
-        outside the trust region (for logging).
-
-        BC HOOK: this is where the behavior cloning term goes if you want it
-        mixed directly into the actor's clipped surrogate. example:
-
-            bc_obs, bc_expert_a = self.dagger_buffer.sample(self.bc_batch_size)
-            student_mean = self.policy.get_distribution(bc_obs).distribution.mean
-            bc_loss = F.mse_loss(student_mean, bc_expert_a)
-            policy_loss = policy_loss + self.bc_coef * bc_loss
-        """
-        # unclipped objective.
+        """Clipped surrogate objective; returns (loss, clip_fraction)."""
         policy_loss_1 = advantages * ratio
-        # clipped objective (limits the ratio to the trust region).
         policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-        # ppo takes the minimum (pessimistic) of the two.
         policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
-
-        # fraction of the batch that hit the clip boundary, for diagnostics.
         with th.no_grad():
             clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
-
         return policy_loss, clip_fraction
+
+    def _compute_bc_loss(self) -> th.Tensor:
+        """BC loss on a DAgger-sampled minibatch (arxiv 2212.11419, adapted to PPO).
+
+        ``bc_loss_type="nll"`` uses the negative log-likelihood of the expert
+        action under the policy; ``"mse"`` regresses the policy's deterministic
+        action (distribution mode) onto the expert action.
+
+        Returns 0 when the buffer is empty (first rollout, before any
+        aggregation).
+        """
+        if len(self.demo_dataset) == 0:
+            return th.zeros((), device=self.device)
+
+        obs, expert_act = self.demo_dataset.sample(self.bc_batch_size)
+        # cast to the dtype the policy was built with (sb3 uses float32 by default).
+        obs = obs.to(dtype=th.float32)
+        expert_act = expert_act.to(dtype=th.float32)
+        dist = self.policy.get_distribution(obs)
+        if self.bc_loss_type == "mse":
+            # dist.mode() is the deterministic action (gaussian mean, possibly
+            # tanh-squashed) — regress it onto the expert action.
+            return F.mse_loss(dist.mode(), expert_act)
+        log_prob = dist.log_prob(expert_act)
+        return -log_prob.mean()
 
     def _compute_value_loss(
         self,
@@ -241,37 +305,26 @@ class PPO_BC(OnPolicyAlgorithm):
         returns: th.Tensor,
         clip_range_vf: float | None,
     ) -> th.Tensor:
-        """
-        value function loss: mse against the TD(lambda) returns target. if
-        clip_range_vf is provided we additionally clip the value update to
-        avoid jumps (openai-style).
-        """
         if clip_range_vf is None:
             values_pred = values
         else:
-            # constrain the value delta to ~ +/- clip_range_vf. note this
-            # depends on the reward scale.
-            values_pred = old_values + th.clamp(values - old_values, -clip_range_vf, clip_range_vf)
+            values_pred = old_values + th.clamp(
+                values - old_values, -clip_range_vf, clip_range_vf
+            )
         return F.mse_loss(returns, values_pred)
 
-    def _compute_entropy_loss(self, entropy: th.Tensor | None, log_prob: th.Tensor) -> th.Tensor:
-        """
-        entropy bonus to encourage exploration. when the distribution has no
-        analytical entropy (e.g. squashed gaussian) we fall back to the negative
-        log prob as a stochastic approximation.
-        """
+    def _compute_entropy_loss(
+        self, entropy: th.Tensor | None, log_prob: th.Tensor
+    ) -> th.Tensor:
+        # fall back to -mean(log_prob) when entropy has no closed form (squashed gaussian).
         if entropy is None:
             return -th.mean(-log_prob)
         return -th.mean(entropy)
 
     def _compute_total_loss(
-        self, policy_loss: th.Tensor, value_loss: th.Tensor, entropy_loss: th.Tensor
+        self, policy_loss: th.Tensor, bc_loss: th.Tensor, value_loss: th.Tensor, entropy_loss: th.Tensor
     ) -> th.Tensor:
-        """
-        combine the three losses with their coefficients. add additional terms
-        (e.g. a separate bc loss) here when wiring dagger.
-        """
-        return policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+        return policy_loss + self.bc_coef * bc_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
     def _compute_approx_kl(self, log_prob: th.Tensor, old_log_prob: th.Tensor) -> np.ndarray:
         """
@@ -285,14 +338,6 @@ class PPO_BC(OnPolicyAlgorithm):
         return approx_kl_div
 
     def _optimization_step(self, loss: th.Tensor) -> None:
-        """
-        single gradient step: zero, backward, clip grad norm, step.
-
-        THIS IS THE .backward() CALL. when adding dagger or extra losses, you
-        only need to make sure `loss` already includes them by the time you get
-        here. global gradient clipping and the optimizer step itself stay the
-        same.
-        """
         self.policy.optimizer.zero_grad()
         loss.backward()
         th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
@@ -303,12 +348,8 @@ class PPO_BC(OnPolicyAlgorithm):
     # ------------------------------------------------------------------
 
     def train(self) -> None:
-        """
-        Update policy using the currently gathered rollout buffer.
+        """n_epochs passes over the rollout buffer, with KL early-stop."""
 
-        runs n_epochs passes over the rollout, with optional early stopping when
-        the approx kl exceeds 1.5 * target_kl. logging is unchanged from sb3.
-        """
         # train mode flips batchnorm / dropout on. collect_rollouts flips it back.
         self.policy.set_training_mode(True)
         # apply the learning rate schedule.
@@ -323,6 +364,7 @@ class PPO_BC(OnPolicyAlgorithm):
         # per-epoch diagnostic accumulators.
         entropy_losses: list[float] = []
         pg_losses: list[float] = []
+        bc_losses: list[float] = []
         value_losses: list[float] = []
         clip_fractions: list[float] = []
 
@@ -355,20 +397,24 @@ class PPO_BC(OnPolicyAlgorithm):
                 pg_losses.append(policy_loss.item())
                 clip_fractions.append(clip_fraction)
 
-                # 4) value loss (optionally clipped).
+                # 4) behavioral cloning loss
+                bc_loss = self._compute_bc_loss()
+                bc_losses.append(bc_loss.item())
+                
+                # 5) value loss (optionally clipped).
                 value_loss = self._compute_value_loss(
                     values, rollout_data.old_values, rollout_data.returns, clip_range_vf
                 )
                 value_losses.append(value_loss.item())
 
-                # 5) entropy bonus.
+                # 6) entropy bonus.
                 entropy_loss = self._compute_entropy_loss(entropy, log_prob)
                 entropy_losses.append(entropy_loss.item())
 
-                # 6) compose the final scalar loss.
-                loss = self._compute_total_loss(policy_loss, value_loss, entropy_loss)
+                # 7) compose the final scalar loss.
+                loss = self._compute_total_loss(policy_loss, bc_loss, value_loss, entropy_loss)
 
-                # 7) approximate kl, used both for logging and early stopping.
+                # 8) approximate kl, used both for logging and early stopping.
                 approx_kl_div = self._compute_approx_kl(log_prob, rollout_data.old_log_prob)
                 approx_kl_divs.append(approx_kl_div)
 
@@ -378,21 +424,20 @@ class PPO_BC(OnPolicyAlgorithm):
                         print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
                     break
 
-                # 8) backward + optimizer step.
+                # 9) backward + optimizer step.
                 self._optimization_step(loss)
 
             self._n_updates += 1
             if not continue_training:
                 break
 
-        # explained variance over the entire rollout (after gae overwrote it).
         explained_var = explained_variance(
             self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten()
         )
 
-        # diagnostic scalars for tensorboard.
         self.logger.record("train/entropy_loss", np.mean(entropy_losses))
         self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record("train/bc_loss", np.mean(bc_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))
@@ -400,7 +445,14 @@ class PPO_BC(OnPolicyAlgorithm):
             self.logger.record("train/loss", loss.item())
         self.logger.record("train/explained_variance", explained_var)
         if hasattr(self.policy, "log_std"):
+            # raw policy std (what the network learns) vs the effective std the
+            # policy actually samples / scores with once act_var_floor is folded
+            # in — the gap shows the floor holding off variance collapse.
             self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
+            act_var_floor = getattr(self.policy, "_act_var_floor", 0.0)
+            if act_var_floor > 0:
+                eff_std = th.sqrt(th.exp(2.0 * self.policy.log_std) + act_var_floor)
+                self.logger.record("train/std_effective", eff_std.mean().item())
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/clip_range", clip_range)
@@ -416,7 +468,6 @@ class PPO_BC(OnPolicyAlgorithm):
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ) -> SelfPPO_BC:
-        # forward to the base class learn() loop. nothing ppo-specific lives here.
         return super().learn(
             total_timesteps=total_timesteps,
             callback=callback,
@@ -427,26 +478,8 @@ class PPO_BC(OnPolicyAlgorithm):
         )
 
 
-# ----------------------------------------------------------------------
-# expert loading helper
-# ----------------------------------------------------------------------
-
 def load_expert(path, device: th.device | str = "cpu") -> _SB3PPO:
-    """
-    load a frozen expert model from disk so it can be polled inside the dagger
-    rollout hook. the returned object is a stable_baselines3.PPO instance with
-    its policy in eval mode.
-
-    the expert is purely a black box at inference time:
-
-        action, _ = expert.predict(obs, deterministic=True)
-
-    so we don't need our own PPO_BC for it. using sb3's PPO.load keeps things
-    compatible with the existing checkpoints under models/experts/*.zip.
-
-    :param path: path to the .zip file produced by PPO.save / CheckpointCallback.
-    :param device: torch device the policy is loaded onto.
-    """
+    """Load a frozen SB3 PPO expert in eval mode for use inside an expert callable."""
     model = _SB3PPO.load(path, device=device)
     model.policy.set_training_mode(False)
     return model

@@ -1,10 +1,18 @@
-from typing import Any, Literal, SupportsFloat, cast
+from typing import Any, Callable, Literal, Sequence, SupportsFloat, cast
 
 from gymnasium import Env, Wrapper
 from gymnasium.core import ActType, ObsType
 from Box2D import b2Vec2
 
 from mdp.bipedal_walker.rl_finetune_rewards import RewardState, compositional_rew
+from mdp.bipedal_walker.tasks import (
+    BY_NAME,
+    TaskSpec,
+    coerce_task,
+    constrain_vel_range,
+    resolve_task,
+    _name_from_bits,
+)
 import numpy as np
 import math
 
@@ -28,11 +36,12 @@ class RlFTEnv(ProprioObsWrapper):
             (-0.75, 0.75),
         ),
         cmd_sample_zero: tuple[float, float] = (0.2, 0.15),
-        allowed_task_mixing: list[tuple[int, int, int]] = [
+        allowed_task_mixing: Sequence[tuple[int, int, int] | TaskSpec] = [
             (1, 0, 0),  # walk
             (0, 1, 0),  # flamingo
             (0, 0, 1),  # tilt
         ],
+        use_rew_for_individual_tasks: bool = False,
         hull_x_range: tuple[float, float] = (20.0, 60.0),
         manual_ctrl_mode: bool = False,
     ):
@@ -79,10 +88,14 @@ class RlFTEnv(ProprioObsWrapper):
         )
         self._cmd_sample_range = cmd_sample_range
         self._cmd_sample_zero = cmd_sample_zero
-        self._allowed_task_mixing: list[tuple[int, int, int]] = [
-            (int(row[0]), int(row[1]), int(row[2])) for row in allowed_task_mixing
+        # Coerce each row to a TaskSpec. Raw 3-tuples become velocity-unconstrained
+        # specs (pre-refactor behavior); pass mdp.bipedal_walker.tasks specs (e.g.
+        # SINGLE_TASKS) to treat walk_forward / walk_backward as distinct tasks.
+        self._allowed_tasks: list[TaskSpec] = [
+            coerce_task(row) for row in allowed_task_mixing
         ]
-        assert len(self._allowed_task_mixing) > 0, "allowed_task_mixing must be non-empty"
+        assert len(self._allowed_tasks) > 0, "allowed_task_mixing must be non-empty"
+        self._use_rew_for_individual_tasks = use_rew_for_individual_tasks
         self._hull_x_range: tuple[float, float] = hull_x_range
 
         # velocity and tilt commands
@@ -93,8 +106,12 @@ class RlFTEnv(ProprioObsWrapper):
             cmd_interp_speed[1] / FPS,
         )
 
-        # task specification
+        # task specification. _task_id_vec is the 3-bit obs one-hot; _active_task
+        # carries the richer directional identity (incl. velocity sign) and is
+        # what command sampling consults. They stay in sync via _activate_task.
         self._task_id_vec: tuple[int, int, int] = (0, 0, 0)  # [walk, flamingo, tilt]
+        self._active_task: TaskSpec = coerce_task((0, 0, 0))
+        self._task_sample_probs: tuple[float, ...] | None = None  # None = uniform sampling
 
         # previous hull velocities and accelerations for jerk calculation
         self._prev_vel_x: float = 0.0
@@ -118,9 +135,81 @@ class RlFTEnv(ProprioObsWrapper):
 
         self.manual_ctrl_mode = manual_ctrl_mode
 
-    def _compute_stability_reward(
+        # When set, task sampling in step()/reset() is bypassed and `_task_id_vec`
+        # is pinned to this value. Used by the algorithm's adversarial eval loop
+        # to force each isolated task while still letting commands resample.
+        self._forced_task: TaskSpec | None = None
+
+    def _coerce_task(self, task) -> TaskSpec:
+        """Accept a TaskSpec, a task name, or a raw 3-tuple → TaskSpec."""
+        if isinstance(task, str):
+            return BY_NAME[task]
+        return coerce_task(task)
+
+    def set_forced_task(self, task) -> None:
+        """Pin the task or clear with None. ``task`` may be a TaskSpec, a task
+        name (e.g. "walk_backward"), or a raw 3-tuple of 0/1 flags (treated as
+        velocity-unconstrained). Command resampling is otherwise unaffected —
+        use ``manual_ctrl_mode`` to freeze commands too."""
+        self._forced_task = None if task is None else self._coerce_task(task)
+
+    def set_task_sample_probs(self, probs) -> None:
+        """Setter so VecEnv.env_method can push a new sampling PMF into the
+        inner RlFTEnv across SubprocVecEnv workers. VecEnv.set_attr would only
+        touch the outer Monitor wrapper, leaving this attribute stale. The PMF
+        must be ordered to match ``allowed_task_mixing``."""
+        self._task_sample_probs = tuple(probs) if probs is not None else None
+
+    def _sample_task(self) -> TaskSpec:
+        """Pick the next task. Forced > sampling PMF > uniform fallback.
+
+        The PMF (set via set_task_sample_probs) is used when its length matches
+        the number of allowed tasks — e.g. the adversarial loop pushes a PMF
+        over the directional single tasks. Otherwise tasks are drawn uniformly.
+        """
+        if self._forced_task is not None:
+            return self._forced_task
+        if (
+            self._task_sample_probs is not None
+            and len(self._task_sample_probs) == len(self._allowed_tasks)
+        ):
+            idx = int(np.random.choice(len(self._allowed_tasks), p=self._task_sample_probs))
+        else:
+            idx = int(np.random.randint(len(self._allowed_tasks)))
+        return self._allowed_tasks[idx]
+
+    def _activate_task(self, spec: TaskSpec) -> None:
+        """Make ``spec`` the current task: sync the 3-bit obs vector from it."""
+        self._active_task = spec
+        self._task_id_vec = spec.task_id_vec
+
+    def _effective_vel_range(self) -> tuple[float, float]:
+        """Velocity sampling range for the active task — its sign constraint
+        folded into the configured cmd_sample_range."""
+        return constrain_vel_range(self._cmd_sample_range[0], self._active_task.vel_sign)
+
+    def _sample_vel_target(self) -> float:
+        """Sample a velocity command target under the active task's sign
+        constraint, honoring the zero-sampling probability."""
+        if np.random.random() > self._cmd_sample_zero[0]:
+            return float(np.random.uniform(*self._effective_vel_range()))
+        return 0.0
+
+    def _compute_task_mixing_reward(
         self, base_obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float]]:
+        task_walk, task_hop, task_tilt = [bool(i) for i in self._task_id_vec]
+        cmd_walk, cmd_tilt = self._effective_cmd_vec()
+
+        # Combined tasks have no expert to drive BC, so they always need the
+        # task-specific RL signal. Individual tasks only get task-specific
+        # rewards when explicitly enabled — otherwise expert BC drives learning
+        # and the RL term is just stability.
+        is_combined = sum(self._task_id_vec) > 1
+        if not is_combined and not self._use_rew_for_individual_tasks:
+            task_walk = task_hop = task_tilt = False
+            cmd_walk = cmd_tilt = 0.0
+        
         r, r_terms, r_raws, r_weights, state_update = compositional_rew(
             env=cast(BipedalWalker, self.unwrapped),
             base_obs=base_obs,
@@ -135,9 +224,9 @@ class RlFTEnv(ProprioObsWrapper):
                 last_obs_13=self._last_obs_13,
                 steps_since_hop=self._steps_since_hop,
             ),
-            cmd_vel=None,
-            cmd_tilt=None,
-            cmd_hop=None,
+            cmd_vel=cmd_walk if task_walk else None,
+            cmd_tilt=cmd_tilt if task_tilt else None,
+            cmd_flamingo=task_hop,
             weight_overrides=None,
         )
         # update hop state
@@ -187,9 +276,17 @@ class RlFTEnv(ProprioObsWrapper):
         # compute just stability reward for now
         # adapt to dynamic reward switching in the future
         rew, info["reward_terms"], info["reward_raw"], info["reward_weights"] = (
-            self._compute_stability_reward(base_obs, term)
+            self._compute_task_mixing_reward(base_obs, term)
         )
         info["task"] = self._task_id_vec
+        # directional task label (walk_forward/walk_backward/flamingo/tilt), derived
+        # from the obs bits + effective velocity sign so it's correct even when
+        # _task_id_vec is driven externally (manual_ctrl_mode). Combined tasks fall
+        # back to a composed name (e.g. "walk+tilt").
+        _spec = resolve_task(self._task_id_vec, self._effective_cmd_vec()[0])
+        info["task_name"] = (
+            _spec.name if _spec is not None else _name_from_bits(self._task_id_vec)
+        )
 
         # update jerk + accel book keeping
         post_vel_x = env.hull.linearVelocity.x
@@ -205,12 +302,7 @@ class RlFTEnv(ProprioObsWrapper):
             and self._cmd_switch_steps[0] < self._max_steps
             and self._step_count % self._cmd_switch_steps[0] == 0
         ):
-            new_vel_target = (
-                float(np.random.uniform(*self._cmd_sample_range[0]))
-                if np.random.random() > self._cmd_sample_zero[0]
-                else 0.0
-            )
-            self._cmd_vec_target = (new_vel_target, self._cmd_vec_target[1])
+            self._cmd_vec_target = (self._sample_vel_target(), self._cmd_vec_target[1])
 
         # resample tilt command if specified
         if (
@@ -228,21 +320,34 @@ class RlFTEnv(ProprioObsWrapper):
         delta_vel = self._cmd_vec_target[0] - self._cmd_vec[0]
         delta_tilt = self._cmd_vec_target[1] - self._cmd_vec[1]
         self._cmd_vec = (
-            self._cmd_vec[0] + float(np.clip(delta_vel, -self._cmd_interp_step[0], self._cmd_interp_step[0])),
-            self._cmd_vec[1] + float(np.clip(delta_tilt, -self._cmd_interp_step[1], self._cmd_interp_step[1])),
+            self._cmd_vec[0]
+            + float(
+                np.clip(delta_vel, -self._cmd_interp_step[0], self._cmd_interp_step[0])
+            ),
+            self._cmd_vec[1]
+            + float(
+                np.clip(delta_tilt, -self._cmd_interp_step[1], self._cmd_interp_step[1])
+            ),
         )
 
-        # resample task if specified — pick uniformly from allowed mixes
+        # resample task on schedule unless manual control is on. _sample_task
+        # honors _forced_task → _task_sample_probs (single-task mode only) →
+        # uniform fallback. Mixed-task mode never uses the adversarial PMF;
+        # add critic-based adversarial search there in the future.
         if (
             not self.manual_ctrl_mode
             and self._task_switch_steps < self._max_steps
             and self._step_count % self._task_switch_steps == 0
         ):
-            idx = int(np.random.randint(len(self._allowed_task_mixing)))
-            self._task_id_vec = self._allowed_task_mixing[idx]
+            self._activate_task(self._sample_task())
+            # resample the velocity target under the new task's sign constraint
+            # so e.g. a switch to walk_backward immediately heads backward.
+            self._cmd_vec_target = (self._sample_vel_target(), self._cmd_vec_target[1])
 
         # augment base_obs with task-masked cmd vec + task id
-        obs = self._derive_full_obs(base_obs, self._effective_cmd_vec(), self._task_id_vec)
+        obs = self._derive_full_obs(
+            base_obs, self._effective_cmd_vec(), self._task_id_vec
+        )
 
         return obs, rew, term, trunc, info
 
@@ -315,14 +420,22 @@ class RlFTEnv(ProprioObsWrapper):
             ux, uy = dx / length, dy / length
             shaft_end = (end[0] - ux * HEAD_LEN, end[1] - uy * HEAD_LEN)
             pygame.draw.line(
-                env.surf, color,
+                env.surf,
+                color,
                 (int(start[0]), int(start[1])),
-                (int(shaft_end[0]), int(shaft_end[1])), 2,
+                (int(shaft_end[0]), int(shaft_end[1])),
+                2,
             )
             px, py = -uy, ux
             tip = (int(end[0]), int(end[1]))
-            p2 = (int(end[0] - ux * HEAD_LEN + px * HEAD_WIDTH), int(end[1] - uy * HEAD_LEN + py * HEAD_WIDTH))
-            p3 = (int(end[0] - ux * HEAD_LEN - px * HEAD_WIDTH), int(end[1] - uy * HEAD_LEN - py * HEAD_WIDTH))
+            p2 = (
+                int(end[0] - ux * HEAD_LEN + px * HEAD_WIDTH),
+                int(end[1] - uy * HEAD_LEN + py * HEAD_WIDTH),
+            )
+            p3 = (
+                int(end[0] - ux * HEAD_LEN - px * HEAD_WIDTH),
+                int(end[1] - uy * HEAD_LEN - py * HEAD_WIDTH),
+            )
             pygame.draw.polygon(env.surf, color, [tip, p2, p3])
 
         bx, by = screen_dir(hull_ang)
@@ -335,8 +448,8 @@ class RlFTEnv(ProprioObsWrapper):
             anchor[1] + (BLUE_ARROW_LEN + GREEN_ARROW_LEN) * gy,
         )
 
-        draw_segment(anchor, blue_end, (71, 126, 255))   # blue = actual hull angle
-        draw_segment(anchor, green_end, (9, 176, 12))    # green = command tilt
+        draw_segment(anchor, blue_end, (71, 126, 255))  # blue = actual hull angle
+        draw_segment(anchor, green_end, (9, 176, 12))  # green = command tilt
 
     def _draw_task_info(self, env):
         unwrapped: Any = self.unwrapped
@@ -369,7 +482,7 @@ class RlFTEnv(ProprioObsWrapper):
             parts.append("tilt")
         task_name = " + ".join(parts) if parts else "idle"
 
-        cmd_vel_str  = f"{cmd_vel:+.2f}"  if task_vel  else "DISABLED"
+        cmd_vel_str = f"{cmd_vel:+.2f}" if task_vel else "DISABLED"
         cmd_tilt_str = f"{cmd_tilt:+.2f}" if task_tilt else "DISABLED"
 
         lines = [
@@ -418,25 +531,22 @@ class RlFTEnv(ProprioObsWrapper):
 
         obs, info = super().reset(seed=seed, options=options)
 
-        # sample initial command vec
-        cmd_vel = (
-            float(np.random.uniform(*self._cmd_sample_range[0]))
-            if not self.manual_ctrl_mode and np.random.random() > self._cmd_sample_zero[0]
-            else 0.0
-        )
+        # sample task first (forced → PMF → uniform) so the velocity command can
+        # respect the task's sign constraint. Skipped in manual control, where an
+        # external caller drives _task_id_vec / _cmd_vec directly.
+        if not self.manual_ctrl_mode:
+            self._activate_task(self._sample_task())
+
+        # sample initial command vec (velocity honors the active task's sign)
+        cmd_vel = self._sample_vel_target() if not self.manual_ctrl_mode else 0.0
         cmd_tilt = (
             float(np.random.uniform(*self._cmd_sample_range[1]))
-            if not self.manual_ctrl_mode and np.random.random() > self._cmd_sample_zero[1]
+            if not self.manual_ctrl_mode
+            and np.random.random() > self._cmd_sample_zero[1]
             else 0.0
         )
         self._cmd_vec = (cmd_vel, cmd_tilt)
         self._cmd_vec_target = self._cmd_vec
-
-        # sample task uniformly from allowed mixes
-        if not self.manual_ctrl_mode:
-            idx = int(np.random.randint(len(self._allowed_task_mixing)))
-            self._task_id_vec = self._allowed_task_mixing[idx]
-            info["task"] = self._task_id_vec
 
         env: Any = self.unwrapped
         hull = env.hull

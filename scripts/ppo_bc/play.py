@@ -1,26 +1,3 @@
-"""
-scripts/rlft/play.py
-====================
-
-Interactively drive a finetuned Rudin-baseline model in the v2 RlFTEnv. Mirrors
-scripts/ppo_bc/play.py: keys 1-5 select individual / combination tasks, arrows
-drive the velocity / tilt commands.
-
-Controls:
-  r           reset
-  space       pause / resume
-  s           step (while paused)
-  q           quit
-  1           walk            (1, 0, 0)
-  2           flamingo        (0, 1, 0)
-  3           tilt            (0, 0, 1)
-  4           walk + flamingo (1, 1, 0)
-  5           walk + tilt     (1, 0, 1)
-  left/right  velocity -/+
-  up/down     tilt +/-
-  0           zero cmds
-"""
-
 import os
 from gymnasium import make
 import pygame
@@ -29,7 +6,7 @@ from stable_baselines3 import PPO
 from pynput import keyboard
 from pynput.keyboard import Key, KeyCode
 
-from utils.paths import MODELS_DIR, rudin_finetuned_experiment
+from utils.paths import MODELS_DIR
 from wrappers.plot_env import Plotter
 from wrappers.plot_reward_env import RewardPlotter
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
@@ -37,10 +14,16 @@ from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 
 # =========================================
 
-# which finetuned model to load: rudin[_adv]/finetuned/<VERSION>/<MODEL_CHECKPOINT>.zip
-ADVERSARIAL = False
-VERSION = "1.0.0"
-MODEL_CHECKPOINT = "best/best_model"
+# EXPERIMENT_NAME = "ppo_bc/1.0.0-18_57_32-2026_05_24"
+# EXPERIMENT_NAME = "ppo_bc/1.0.1-17_30_08-2026_05_25"
+# EXPERIMENT_NAME = "ppo_bc/1.0.2-23_53_29-2026_05_25"
+# EXPERIMENT_NAME = "ppo_bc/1.0.3-11_13_43-2026_05_26"
+# EXPERIMENT_NAME = "ppo_bc/1.1.0-16_07_40-2026_05_26"
+# EXPERIMENT_NAME = "ppo_bc/1.2.0-21_04_31-2026_05_26"
+# EXPERIMENT_NAME = "ppo_bc/critic_pretrain/1.0.2.1-15_24_49-2026_05_27"
+# EXPERIMENT_NAME = "ppo_bc/1.2.1-01_01_25-2026_05_27"
+EXPERIMENT_NAME = "ppo_bc_adv/pretrain/1.0.1"
+MODEL_CHECKPOINT = "rl_model_2799664_steps"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)
@@ -48,7 +31,7 @@ PLOT_MODE: str | None = None
 
 MANUAL_CTRL = True
 
-# --- env params (mirrors scripts/rlft/finetune_config.py defaults) ---
+# --- env params (mirrors scripts/ppo_bc/train.py defaults) ---
 EP_TIME              = 10
 CMD_SWITCHING_TIME   = (3.0, 4.0)   # (vel, tilt)
 TASK_SWITCHING_TIME  = 6.0
@@ -83,13 +66,11 @@ def main():
     global _sim_paused, _sim_step, _sim_res
     global _left_held, _right_held, _up_held, _down_held, _zero_cmds, _task_set
 
-    experiment_name = rudin_finetuned_experiment(ADVERSARIAL, VERSION)
-
     # start key listeners
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()  # start to listen on a separate thread
 
-    print(f'=== Starting experiment "{experiment_name}" ===')
+    print(f'=== Starting experiment "{EXPERIMENT_NAME}" ===')
     if MANUAL_CTRL:
         print("Controls:")
         print("  r           reset")
@@ -129,7 +110,7 @@ def main():
 
     # load model
     print(f'Loading model "{MODEL_CHECKPOINT}"...')
-    model_path = MODELS_DIR / f"{experiment_name}/{MODEL_CHECKPOINT}.zip"
+    model_path = MODELS_DIR / f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}.zip"
     model = PPO.load(model_path, env=wrap_env, device="cpu")
 
     cmd_vel_target = 0.0

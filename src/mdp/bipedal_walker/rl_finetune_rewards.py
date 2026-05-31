@@ -24,7 +24,7 @@ Proprioceptive observation layout (14 elements):
 
 LEG_H = 34 / 30.0
 TARGET_HEIGHT = 2 * LEG_H + 0.1
-DEFAULT_HOP_SATURATION_STEPS = 30.0
+GAIT_SATURATION_STEPS = 30.0
 
 
 @dataclass
@@ -35,7 +35,8 @@ class RewardState:
     prev_vel_y: float = 0.0
     prev_accel_x: float = 0.0
     prev_accel_y: float = 0.0
-    # hop bookkeeping (consumed and updated by flamingo_hop_rew)
+    # leg-contact bookkeeping (consumed and updated by _leg_contact_event,
+    # shared by both walk_rew and flamingo_hop_rew)
     last_leg_contact: int = -1  # 0 = left, 1 = right, -1 = unset
     last_obs_8: float = 0.0
     last_obs_13: float = 0.0
@@ -128,59 +129,100 @@ def tilt_rew(
     return _to_pair(cfg)
 
 
-def flamingo_hop_rew(
+def _leg_contact_event(
     base_obs: np.ndarray,
     last_leg_contact: int,
     last_obs_8: float,
     last_obs_13: float,
     steps_since_hop: int,
-    hop_saturation_steps: float = DEFAULT_HOP_SATURATION_STEPS,
-) -> tuple[dict[str, float], dict[str, float], dict[str, Any]]:
-    """Single-leg bounding pattern. Returns (raw, weights, hop_state_update)."""
-    both_leg_contact = 1 if base_obs[8] == 1 and base_obs[13] == 1 else 0
+) -> tuple[str, int, dict[str, Any]]:
+    """Classify the current leg-contact rising edge as a gait event.
 
-    leg_alt_penalty = 0
-    hopping_bonus = 0.0
+    Shared by walk_rew and flamingo_hop_rew so the contact state machine
+    advances exactly once per step regardless of which behaviors are active.
+    Returns (event, steps_at_event, state_update) where event is "none",
+    "hop" (same leg landed again) or "switch" (legs alternated), and
+    steps_at_event is the step count since the previous event (used to scale
+    gait-cadence rewards).
+    """
+    event = "none"
+    steps_at_event = steps_since_hop
+
     if last_leg_contact == -1:  # ambiguous last
         if base_obs[8]:
             last_leg_contact = 0
         elif base_obs[13]:
             last_leg_contact = 1
-    elif last_leg_contact == 0:  # last one is leg 1
-        if base_obs[8] and not last_obs_8:
-            hopping_bonus = float(np.tanh(steps_since_hop / hop_saturation_steps))
+    elif last_leg_contact == 0:  # last contact was leg 1
+        if base_obs[8] and not last_obs_8:  # leg 1 again
+            event = "hop"
             steps_since_hop = -1
-        elif base_obs[13] and not last_obs_13:
+        elif base_obs[13] and not last_obs_13:  # leg 2 = alternation
+            event = "switch"
             last_leg_contact = 1
-            leg_alt_penalty = 1
             steps_since_hop = -1
-    elif last_leg_contact == 1:  # last one is leg 2
-        if base_obs[13] and not last_obs_13:
-            hopping_bonus = float(np.tanh(steps_since_hop / hop_saturation_steps))
+    elif last_leg_contact == 1:  # last contact was leg 2
+        if base_obs[13] and not last_obs_13:  # leg 2 again
+            event = "hop"
             steps_since_hop = -1
-        elif base_obs[8] and not last_obs_8:
+        elif base_obs[8] and not last_obs_8:  # leg 1 = alternation
+            event = "switch"
             last_leg_contact = 0
-            leg_alt_penalty = 1
             steps_since_hop = -1
 
     steps_since_hop += 0 if last_leg_contact == -1 else 1
 
-    last_obs_8 = base_obs[8]
-    last_obs_13 = base_obs[13]
+    state_update: dict[str, Any] = {
+        "last_leg_contact": int(last_leg_contact),
+        "last_obs_8": float(base_obs[8]),
+        "last_obs_13": float(base_obs[13]),
+        "steps_since_hop": int(steps_since_hop),
+    }
+    return event, steps_at_event, state_update
+
+
+def walk_rew(
+    event: str,
+    steps_at_event: int,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Bipedal gait shaping: reward alternating leg contacts, penalize hopping
+    (same leg twice in a row). Applied alongside velocity tracking. Suppressed
+    when flamingo is active so it can't cancel the single-leg hop penalty."""
+    leg_alt_bonus = (
+        float(np.tanh(steps_at_event / GAIT_SATURATION_STEPS))
+        if event == "switch"
+        else 0.0
+    )
+    hopping_penalty = 1 if event == "hop" else 0
 
     cfg: list[tuple[str, Any, float]] = [
-        ("leg_alt_penalty", leg_alt_penalty, -0.3),
+        ("leg_alt_bonus", leg_alt_bonus, 1.0),
+        ("hopping_penalty", hopping_penalty, -0.3),
+    ]
+    return _to_pair(cfg)
+
+
+def flamingo_hop_rew(
+    base_obs: np.ndarray,
+    event: str,
+    steps_at_event: int,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Single-leg bounding pattern: reward same-leg hops, heavily penalize
+    alternating legs so the hop dominates even when walk is commanded too."""
+    both_leg_contact = 1 if base_obs[8] == 1 and base_obs[13] == 1 else 0
+    hopping_bonus = (
+        float(np.tanh(steps_at_event / GAIT_SATURATION_STEPS))
+        if event == "hop"
+        else 0.0
+    )
+    leg_alt_penalty = 1 if event == "switch" else 0
+
+    cfg: list[tuple[str, Any, float]] = [
+        ("leg_alt_penalty", leg_alt_penalty, -3.0),
         ("hopping_bonus", hopping_bonus, 1.0),
         ("both_leg_contact", both_leg_contact, -0.5),
     ]
-    raw, weights = _to_pair(cfg)
-    hop_state_update: dict[str, Any] = {
-        "last_leg_contact": int(last_leg_contact),
-        "last_obs_8": float(last_obs_8),
-        "last_obs_13": float(last_obs_13),
-        "steps_since_hop": int(steps_since_hop),
-    }
-    return raw, weights, hop_state_update
+    return _to_pair(cfg)
 
 
 def compositional_rew(
@@ -190,7 +232,7 @@ def compositional_rew(
     state: RewardState,
     cmd_vel: float | None = None,
     cmd_tilt: float | None = None,
-    cmd_hop: float | None = None,
+    cmd_flamingo: bool = False,
     weight_overrides: dict[str, float] | None = None,
 ) -> tuple[
     SupportsFloat,
@@ -202,9 +244,10 @@ def compositional_rew(
     """Sum stability + any active behavior rewards.
 
     Commands:
-        cmd_vel:  None disables velocity tracking; otherwise target x-velocity.
-        cmd_tilt: None disables tilt tracking;     otherwise target hull angle.
-        cmd_hop:  None disables hop reward;        otherwise hop saturation steps.
+        cmd_vel:      None disables velocity tracking; otherwise target x-velocity.
+                      Also gates the walk gait reward (leg alternation).
+        cmd_tilt:     None disables tilt tracking;     otherwise target hull angle.
+        cmd_flamingo: False disables hop reward;       True enables single-leg hopping.
     """
     raw, weights = stability_rew(env, base_obs, terminated)
 
@@ -225,16 +268,23 @@ def compositional_rew(
         raw.update(r)
         weights.update(w)
 
-    hop_state_update: dict[str, Any] = {}
-    if cmd_hop is not None:
-        r, w, hop_state_update = flamingo_hop_rew(
+    # Leg-contact gait shaping. Both walk (alternation) and flamingo (hop) read
+    # the same contact state machine, so advance it once and pick the behavior:
+    # flamingo dominates when commanded (its heavy alternation penalty governs),
+    # otherwise the walk alternation reward applies alongside velocity tracking.
+    leg_state_update: dict[str, Any] = {}
+    if cmd_flamingo or cmd_vel is not None:
+        event, steps_at_event, leg_state_update = _leg_contact_event(
             base_obs,
             state.last_leg_contact,
             state.last_obs_8,
             state.last_obs_13,
             state.steps_since_hop,
-            hop_saturation_steps=cmd_hop,
         )
+        if cmd_flamingo:
+            r, w = flamingo_hop_rew(base_obs, event, steps_at_event)
+        else:
+            r, w = walk_rew(event, steps_at_event)
         raw.update(r)
         weights.update(w)
 
@@ -246,81 +296,5 @@ def compositional_rew(
     components = {k: raw[k] * weights[k] for k in raw}
     total = sum(components.values())
 
-    new_state = replace(state, **hop_state_update) if hop_state_update else state
+    new_state = replace(state, **leg_state_update) if leg_state_update else state
     return total, components, raw, weights, new_state
-
-
-def walk_preset(
-    env: BipedalWalker,
-    base_obs: np.ndarray,
-    terminated: bool,
-    state: RewardState,
-    cmd_vel: float,
-) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float], RewardState]:
-    return compositional_rew(
-        env, base_obs, terminated, state, cmd_vel=cmd_vel, cmd_tilt=0.0
-    )
-
-
-def flamingo_preset(
-    env: BipedalWalker,
-    base_obs: np.ndarray,
-    terminated: bool,
-    state: RewardState,
-) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float], RewardState]:
-    return compositional_rew(
-        env, base_obs, terminated, state,
-        cmd_vel=0.0, cmd_tilt=0.0, cmd_hop=DEFAULT_HOP_SATURATION_STEPS,
-    )
-
-
-def tilt_preset(
-    env: BipedalWalker,
-    base_obs: np.ndarray,
-    terminated: bool,
-    state: RewardState,
-    cmd_tilt: float,
-) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float], RewardState]:
-    return compositional_rew(
-        env, base_obs, terminated, state, cmd_vel=0.0, cmd_tilt=cmd_tilt
-    )
-
-
-def hop_preset(
-    env: BipedalWalker,
-    base_obs: np.ndarray,
-    terminated: bool,
-    state: RewardState,
-    cmd_vel: float,
-) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float], RewardState]:
-    return compositional_rew(
-        env, base_obs, terminated, state,
-        cmd_vel=cmd_vel, cmd_tilt=0.0, cmd_hop=DEFAULT_HOP_SATURATION_STEPS,
-    )
-
-
-def walking_tilted_preset(
-    env: BipedalWalker,
-    base_obs: np.ndarray,
-    terminated: bool,
-    state: RewardState,
-    cmd_vel: float,
-    cmd_tilt: float,
-) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float], RewardState]:
-    return compositional_rew(
-        env, base_obs, terminated, state, cmd_vel=cmd_vel, cmd_tilt=cmd_tilt
-    )
-
-
-def hopping_tilted_preset(
-    env: BipedalWalker,
-    base_obs: np.ndarray,
-    terminated: bool,
-    state: RewardState,
-    cmd_vel: float,
-    cmd_tilt: float,
-) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float], RewardState]:
-    return compositional_rew(
-        env, base_obs, terminated, state,
-        cmd_vel=cmd_vel, cmd_tilt=cmd_tilt, cmd_hop=DEFAULT_HOP_SATURATION_STEPS,
-    )

@@ -1,3 +1,22 @@
+"""
+scripts/rlft/compare.py
+=======================
+
+Render several finetuned Rudin-baseline models side-by-side in a grid, all
+driven by the same keyboard input (v2 controls, mirrors scripts/rlft/play.py).
+Envs share a seed each round so the comparison is apples-to-apples.
+
+Controls (applied to all models):
+  r           reset all
+  space       pause / resume
+  s           step (while paused)
+  q           quit
+  1-5         toggle tasks (walk / flamingo / tilt / walk+flamingo / walk+tilt)
+  left/right  velocity -/+
+  up/down     tilt +/-
+  0           zero cmds
+"""
+
 import os
 import warnings
 from gymnasium import make
@@ -8,17 +27,18 @@ from pynput.keyboard import Key, KeyCode
 
 from stable_baselines3 import PPO
 from utils.paths import MODELS_DIR
-from wrappers.bipedal_walker.rltf_env import RlFTEnv
+from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # =========================================
 
+# (experiment_name, label). experiment_name is a models/-relative dir, e.g.
+# rudin/finetuned/1.0.0 or rudin_adv/finetuned/1.0.0 (see
+# utils.paths.rudin_finetuned_experiment).
 EXPERIMENTS = [
-    ("rlft/finetuned/ml_3.3.2a_g97-01_08_38-2026_05_12", "3.3.2a"),
-    ("rlft/finetuned/ml_3.4.3_g97-02_54_26-2026_05_13", "3.4.3"),
-    ("rlft/finetuned/ml_3.4.1_g97-02_53_58-2026_05_13", "3.3.1"),
-    ("rlft/finetuned/ml_3.3.2_g97-01_08_13-2026_05_12", "3.3.2"),
+    ("rudin/finetuned/1.0.0", "rudin 1.0.0"),
+    ("rudin_adv/finetuned/1.0.0", "rudin_adv 1.0.0"),
 ]
 
 MODEL_CHECKPOINT = "best/best_model"
@@ -27,9 +47,14 @@ ENV_W, ENV_H = 600, 400
 MAX_COLS = 2
 FPS = 50
 
-# Rate at which velocity target changes when arrow key is held (m/s per second).
-# Also controls the interpolation speed of _cmd_vel toward the target.
-VEL_KEY_SPEED = 5.0
+# --- env params (mirror finetune_config.py) ---
+EP_TIME              = 10
+CMD_INTERP_SPEED     = (5.0, 1.0)
+CMD_SAMPLE_RANGE     = ((-5.0, 5.0), (-0.75, 0.75))
+HULL_X_RANGE         = (20.0, 60.0)
+
+VEL_KEY_SPEED  = 5.0    # m/s per second
+TILT_KEY_SPEED = 1.0    # rad/s
 
 # =========================================
 
@@ -38,19 +63,21 @@ _sim_step = False
 _sim_res = False
 _left_held = False
 _right_held = False
-_vel_to_zero = False
-_task_set = -1  # -1 = no change, 0 = walk, 1 = hop
+_up_held = False
+_down_held = False
+_zero_cmds = False
+_task_set: tuple[int, int, int] | None = None  # None = no change
 
 
 def main():
     global _sim_paused, _sim_step, _sim_res
-    global _left_held, _right_held, _vel_to_zero, _task_set
+    global _left_held, _right_held, _up_held, _down_held, _zero_cmds, _task_set
 
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
 
-    print(f'=== Comparison: {[label for _, label in EXPERIMENTS]} ===')
-    print("Controls: r=reset, w=walk, h=hop, left/right=velocity, down=stop, space=pause, s=step, q=quit")
+    print(f"=== Comparison: {[label for _, label in EXPERIMENTS]} ===")
+    print("Controls: r=reset, 1-5=tasks, left/right=vel, up/down=tilt, 0=zero, space=pause, s=step, q=quit")
 
     print("Loading environments...")
     envs: list[RlFTEnv] = []
@@ -58,9 +85,11 @@ def main():
         raw = make("BipedalWalker-v3", render_mode="rgb_array")
         env = RlFTEnv(
             raw,
+            ep_time=EP_TIME,
+            cmd_interp_speed=CMD_INTERP_SPEED,
+            cmd_sample_range=CMD_SAMPLE_RANGE,
+            hull_x_range=HULL_X_RANGE,
             manual_ctrl_mode=True,
-            hull_x_range=(0, 0),
-            vel_interp_speed=VEL_KEY_SPEED,
         )
         envs.append(env)
 
@@ -84,7 +113,8 @@ def main():
     done_list: list[bool] = []
     reset_seed = 420
     cmd_vel_target = 0.0
-    task_id = 0
+    cmd_tilt_target = 0.0
+    task_vec: tuple[int, int, int] = (1, 0, 0)  # default walk
 
     def reset_all():
         nonlocal reset_seed
@@ -92,11 +122,11 @@ def main():
         done_list.clear()
         for env in envs:
             obs, _ = env.reset(seed=reset_seed)
-            env._cmd_vel = cmd_vel_target
-            env._cmd_vel_target = cmd_vel_target
-            env._cmd_task_id = task_id
-            base_obs = obs[:-3]
-            obs = env._derive_full_obs(base_obs, cmd_vel_target, task_id)
+            cmd = (cmd_vel_target, cmd_tilt_target)
+            env._cmd_vec = cmd
+            env._cmd_vec_target = cmd
+            env._task_id_vec = task_vec
+            obs = env._derive_full_obs(obs[:-5], env._effective_cmd_vec(), task_vec)
             obs_list.append(obs)
             done_list.append(False)
         reset_seed += 1
@@ -126,24 +156,29 @@ def main():
     while True:
         pygame.event.pump()
 
-        # drive cmd_vel_target while arrow keys are held
+        # drive cmd targets while arrow keys are held
         if _right_held:
-            cmd_vel_target = min(cmd_vel_target + VEL_KEY_SPEED / FPS, 5.0)
+            cmd_vel_target = min(cmd_vel_target + VEL_KEY_SPEED / FPS, CMD_SAMPLE_RANGE[0][1])
         if _left_held:
-            cmd_vel_target = max(cmd_vel_target - VEL_KEY_SPEED / FPS, -5.0)
-        if _vel_to_zero:
+            cmd_vel_target = max(cmd_vel_target - VEL_KEY_SPEED / FPS, CMD_SAMPLE_RANGE[0][0])
+        if _up_held:
+            cmd_tilt_target = min(cmd_tilt_target + TILT_KEY_SPEED / FPS, CMD_SAMPLE_RANGE[1][1])
+        if _down_held:
+            cmd_tilt_target = max(cmd_tilt_target - TILT_KEY_SPEED / FPS, CMD_SAMPLE_RANGE[1][0])
+        if _zero_cmds:
             cmd_vel_target = 0.0
-            _vel_to_zero = False
+            cmd_tilt_target = 0.0
+            _zero_cmds = False
 
         # push updated target to all envs each frame
         for env in envs:
-            env._cmd_vel_target = cmd_vel_target
+            env._cmd_vec_target = (cmd_vel_target, cmd_tilt_target)
 
-        if _task_set != -1:
-            task_id = _task_set
-            _task_set = -1
+        if _task_set is not None:
+            task_vec = _task_set
+            _task_set = None
             for env in envs:
-                env._cmd_task_id = task_id
+                env._task_id_vec = task_vec
 
         if _sim_res:
             reset_all()
@@ -172,7 +207,7 @@ def main():
 
 def on_press(key: Key | KeyCode | None) -> None:
     global _sim_paused, _sim_step, _sim_res
-    global _left_held, _right_held, _vel_to_zero, _task_set
+    global _left_held, _right_held, _up_held, _down_held, _zero_cmds, _task_set
 
     if isinstance(key, KeyCode):
         k = key.char
@@ -181,38 +216,55 @@ def on_press(key: Key | KeyCode | None) -> None:
     else:
         return
 
-    if k == "left":
-        _left_held = True
-    elif k == "right":
-        _right_held = True
-    elif k == "down":
-        _vel_to_zero = True
-    elif k == "space":
+    if k == "space":
         _sim_paused = not _sim_paused
         print("Paused" if _sim_paused else "Resumed")
     elif k == "s":
         _sim_step = True
     elif k == "r":
         _sim_res = True
-    elif k == "w":
-        _task_set = 0
+    elif k == "left":
+        _left_held = True
+    elif k == "right":
+        _right_held = True
+    elif k == "up":
+        _up_held = True
+    elif k == "down":
+        _down_held = True
+    elif k == "0":
+        _zero_cmds = True
+    elif k == "1":
+        _task_set = (1, 0, 0)
         print("Task: walk")
-    elif k == "h":
-        _task_set = 1
-        print("Task: hop")
+    elif k == "2":
+        _task_set = (0, 1, 0)
+        print("Task: flamingo")
+    elif k == "3":
+        _task_set = (0, 0, 1)
+        print("Task: tilt")
+    elif k == "4":
+        _task_set = (1, 1, 0)
+        print("Task: walk + flamingo")
+    elif k == "5":
+        _task_set = (1, 0, 1)
+        print("Task: walk + tilt")
     elif k == "q":
         print("Exiting...")
         os._exit(0)
 
 
 def on_release(key: Key | KeyCode | None) -> None:
-    global _left_held, _right_held
+    global _left_held, _right_held, _up_held, _down_held
 
     if isinstance(key, Key):
         if key.name == "left":
             _left_held = False
         elif key.name == "right":
             _right_held = False
+        elif key.name == "up":
+            _up_held = False
+        elif key.name == "down":
+            _down_held = False
 
 
 if __name__ == "__main__":

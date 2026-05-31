@@ -45,6 +45,7 @@ import torch as th
 from gymnasium import spaces
 from torch import nn
 
+from stable_baselines3.common.distributions import DiagGaussianDistribution
 from stable_baselines3.common.policies import ActorCriticPolicy
 
 
@@ -109,6 +110,9 @@ class PpoBcPolicy(ActorCriticPolicy):
     constructor extras vs ActorCriticPolicy:
         hidden_dims         -> actor trunk hidden widths
         critic_hidden_dims  -> critic trunk hidden widths (defaults to hidden_dims)
+        act_var_floor       -> additive variance bias / floor on the (diagonal
+                               gaussian) action distribution. See
+                               _get_action_dist_from_latent.
 
     everything else (log_std_init, use_sde, optimizer_class, optimizer_kwargs,
     features_extractor_class, ...) is passed through **kwargs to the sb3 base.
@@ -135,6 +139,7 @@ class PpoBcPolicy(ActorCriticPolicy):
         lr_schedule: Callable[[float], float],
         hidden_dims: list[int],
         critic_hidden_dims: list[int] | None = None,
+        act_var_floor: float = 0.0,
         **kwargs: Any,
     ):
         # store on self before super().__init__ because ActorCriticPolicy._build
@@ -144,6 +149,10 @@ class PpoBcPolicy(ActorCriticPolicy):
         self._critic_hidden_dims = (
             list(critic_hidden_dims) if critic_hidden_dims is not None else list(hidden_dims)
         )
+        # additive variance bias on the student's action distribution; see
+        # _get_action_dist_from_latent. 0.0 disables it (plain ActorCriticPolicy
+        # behavior). Consumed here, NOT forwarded to the sb3 base.
+        self._act_var_floor = float(act_var_floor)
 
         # default to ortho_init=False to match RlFTPolicy. caller can still flip
         # it via policy_kwargs since kwargs is forwarded to ActorCriticPolicy.
@@ -161,3 +170,24 @@ class PpoBcPolicy(ActorCriticPolicy):
             critic_hidden_dims=self._critic_hidden_dims,
             activation=self.activation_fn,
         )
+
+    def _get_action_dist_from_latent(self, latent_pi: th.Tensor):
+        """Retrieve action distribution given the latent codes.
+
+        Extra vs sb3: for the diagonal gaussian head we bias the variance by
+        ``act_var_floor`` (var_eff = exp(2*log_std) + act_var_floor) so the
+        policy can't collapse to a deterministic action under the BC loss. This
+        is the single choke point for sb3's forward / evaluate_actions /
+        get_distribution, so the floor applies uniformly to sampling, the PPO
+        ratio + entropy, and the BC loss. Disabled (<= 0) or non-gaussian heads
+        defer to the base implementation.
+        """
+        if self._act_var_floor > 0 and isinstance(
+            self.action_dist, DiagGaussianDistribution
+        ):
+            mean_actions = self.action_net(latent_pi)
+            log_std_eff = 0.5 * th.log(
+                th.exp(2.0 * self.log_std) + self._act_var_floor
+            )
+            return self.action_dist.proba_distribution(mean_actions, log_std_eff)
+        return super()._get_action_dist_from_latent(latent_pi)

@@ -6,17 +6,11 @@ from gymnasium import spaces
 from stable_baselines3.common.policies import ActorCriticPolicy
 
 
-_MODEL_CONFIGS = {
-    "xs":   [128, 64, 32],
-    "s":    [192, 96, 48],
-    "m":    [256, 128, 64],
-    "ml":   [320, 160, 80],
-    "l":    [384, 192, 96],
-    "xl":   [512, 256, 128],
-    "xll":  [768, 384, 192],
-    "xlll": [1024, 512, 256],
-    "xxxl": [1024, 512, 512, 256, 256],
-}
+# Fallback critic widths used only if a caller omits critic_hidden_dims. The
+# RLFT configs always pass actor + critic dims explicitly (actor = the distilled
+# student arch, mdp.bipedal_walker.student.HIDDEN_BC), so this is just a guard —
+# the v1 model-size registry it replaced is gone.
+_DEFAULT_CRITIC_HIDDEN_DIMS = [1024, 512, 512, 256, 256]
 
 
 class RlFTNetwork(nn.Module):
@@ -54,7 +48,9 @@ class RlFTPolicy(ActorCriticPolicy):
         **kwargs,
     ):
         self._hidden_dims = hidden_dims
-        self._critic_hidden_dims = critic_hidden_dims if critic_hidden_dims is not None else _MODEL_CONFIGS["xl"]
+        self._critic_hidden_dims = (
+            critic_hidden_dims if critic_hidden_dims is not None else _DEFAULT_CRITIC_HIDDEN_DIMS
+        )
         kwargs["ortho_init"] = False
         super().__init__(obs_space, act_space, lr_schedule, **kwargs)
 

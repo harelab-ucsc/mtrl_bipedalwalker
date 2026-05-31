@@ -1,0 +1,60 @@
+# Experiment config for scripts/eval/singletask_eval.py. Select with:
+#     python scripts/eval/singletask_eval.py            # -> this file (default)
+#     python scripts/eval/singletask_eval.py default    # -> this file by name
+#     python scripts/eval/singletask_eval.py path/to/x.yaml
+
+
+eval_name: pertask-timealive-taskquality
+ep_time: 10            # seconds per episode -> the survival window
+modulate_period: 3     # re-sample the task command every N seconds
+episodes_per_task: 5000
+episode_chunk: 100     # episodes per pool job (load balancing)
+seed_base: 42          # episode i uses the same seed across models
+
+cmd_vel_forward_range: [0.0, 5.0]
+cmd_vel_backward_range: [-5.0, 0.0]
+cmd_tilt_range: [-0.75, 0.75]
+
+only_models: null
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle).
+# ref:  checkpoint path relative to models/ (hybrid: null). HARD-CODED on purpose —
+#       we deliberately load the *latest* checkpoint, never best/best_model.zip.
+#       After retraining, bump each ref to the newest checkpoint.
+# desc: shown in models.md / meta.json (the chart legend uses `name`).
+models:
+  - name: ppo_bc/pretrain/1.0.0
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.0/rl_model_2799664_steps.zip
+    desc: "PPO+BC pretrained; Unif task sampling; NLL loss; BC_COEF = 0.2"
+
+  - name: ppo_bc/pretrain/1.0.1
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.1/rl_model_2799664_steps.zip
+    desc: "PPO+BC pretrained; Unif task sampling; MSE loss; BC_COEF = 0.2"
+
+  - name: ppo_bc_adv/pretrain/1.0.0
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/1.0.0/rl_model_2799664_steps.zip
+    desc: "PPO+BC pretrained; Adv task sampling; NLL loss; BC_COEF = 0.2"
+
+  - name: ppo_bc_adv/pretrain/1.0.1
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/1.0.1/rl_model_2799664_steps.zip
+    desc: "PPO+BC pretrained; Adv task sampling; MSE loss; BC_COEF = 0.2"
+
+  - name: rudin/distill/1.0.0
+    kind: torch
+    ref: rudin/distill/1.0.0/distill_79.pt
+    desc: "DAgger distilled; Unif task sampling; MSE loss"
+
+  - name: rudin_adv/distill/1.0.0
+    kind: torch
+    ref: rudin_adv/distill/1.0.0/distill_79.pt
+    desc: "DAgger distilled; Adv task sampling; MSE loss"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle"
