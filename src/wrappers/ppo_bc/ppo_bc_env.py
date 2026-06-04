@@ -7,10 +7,16 @@ from Box2D import b2Vec2
 from mdp.bipedal_walker.rl_finetune_rewards import RewardState, compositional_rew
 from mdp.bipedal_walker.tasks import (
     BY_NAME,
+    BY_NAME_GAIT,
+    GAIT,
+    GaitTask,
+    SINGLE_TASKS_GAIT,
     TaskSpec,
     coerce_task,
     constrain_vel_range,
-    resolve_task,
+    effective_cmd,
+    resolve_single_task,
+    reward_mode,
     _name_from_bits,
 )
 import numpy as np
@@ -30,20 +36,20 @@ class RlFTEnv(ProprioObsWrapper):
         ep_time: int = 15,
         cmd_switching_time: tuple[float, float] = (3.0, 4.0),
         task_switching_time: float = 6,
+        task_switch_replacement: bool = True,
         cmd_interp_speed: tuple[float, float] = (5.0, 1.0),
         cmd_sample_range: tuple[tuple[float, float], tuple[float, float]] = (
             (-5.0, 5.0),
             (-0.75, 0.75),
         ),
         cmd_sample_zero: tuple[float, float] = (0.2, 0.15),
-        allowed_task_mixing: Sequence[tuple[int, int, int] | TaskSpec] = [
-            (1, 0, 0),  # walk
-            (0, 1, 0),  # flamingo
-            (0, 0, 1),  # tilt
-        ],
+        allowed_task_mixing: Sequence[tuple[int, int, int] | TaskSpec | GaitTask] = (
+            SINGLE_TASKS_GAIT
+        ),
         use_rew_for_individual_tasks: bool = False,
         hull_x_range: tuple[float, float] = (20.0, 60.0),
         manual_ctrl_mode: bool = False,
+        task_scheme: str = GAIT,
     ):
         """
         RL fine-tuning env that owns its own task and command sampling, unlike the
@@ -54,6 +60,10 @@ class RlFTEnv(ProprioObsWrapper):
             cmd_switching_time: How often (seconds) each command component is resampled.
                 Format is (vel, tilt). Interpolation smooths the transition to the new target.
             task_switching_time: How often (seconds) the task (walk / flamingo / tilt) is resampled.
+            task_switch_replacement: When False, task draws within an episode are without replacement
+                (no back-to-back repeats; the adversarial PMF is renormalized over the remaining
+                tasks). Raises at init if an episode would need more draws than there are allowed
+                tasks. When True (default), every draw is independent (with replacement).
             cmd_interp_speed: Limits how fast the live command tracks the target to avoid
                 jarring transitions. Format is (vel, tilt).
             cmd_sample_range: Uniform sample bounds for each command component. Format is
@@ -70,8 +80,16 @@ class RlFTEnv(ProprioObsWrapper):
                 sampled at reset, so the agent trains across varied terrain patches.
             manual_ctrl_mode: When True, disables all command and task resampling so an
                 external caller can drive commands directly (e.g. for play/eval scripts).
+            task_scheme: "gait" (default) or "onehot" (legacy). Selects how the 3 obs
+                bits are interpreted and how commands are sampled/masked. Under "gait"
+                each row of allowed_task_mixing should be a mdp.bipedal_walker.tasks
+                GaitTask (gait + command ranges); under "onehot" a TaskSpec or raw
+                3-tuple. See mdp.bipedal_walker.tasks for the scheme semantics.
         """
         super().__init__(env)
+
+        # which obs-bit scheme this env runs under (drives sampling/masking/routing)
+        self._task_scheme = task_scheme
 
         # specified here: https://github.com/openai/gym/blob/bc212954b6713d5db303b3ead124de6cba66063e/gym/envs/box2d/bipedal_walker.py#L30
         FPS = 50
@@ -91,10 +109,28 @@ class RlFTEnv(ProprioObsWrapper):
         # Coerce each row to a TaskSpec. Raw 3-tuples become velocity-unconstrained
         # specs (pre-refactor behavior); pass mdp.bipedal_walker.tasks specs (e.g.
         # SINGLE_TASKS) to treat walk_forward / walk_backward as distinct tasks.
-        self._allowed_tasks: list[TaskSpec] = [
+        self._allowed_tasks: list[TaskSpec | GaitTask] = [
             coerce_task(row) for row in allowed_task_mixing
         ]
         assert len(self._allowed_tasks) > 0, "allowed_task_mixing must be non-empty"
+
+        # Without replacement we draw distinct tasks per episode, so an episode must
+        # not request more draws than there are tasks. Draws/episode = 1 (reset pick)
+        # + one per in-episode switch boundary = 1 + (max_steps // task_switch_steps)
+        # when switching is enabled (task_switch_steps < max_steps).
+        self._task_switch_replacement = task_switch_replacement
+        if not task_switch_replacement and self._task_switch_steps < self._max_steps:
+            draws_per_ep = 1 + int(self._max_steps // self._task_switch_steps)
+            if draws_per_ep > len(self._allowed_tasks):
+                raise ValueError(
+                    f"task_switch_replacement=False needs >= {draws_per_ep} distinct "
+                    f"tasks per episode (ep_time={ep_time}s, "
+                    f"task_switching_time={task_switching_time}s => {draws_per_ep} draws) "
+                    f"but only {len(self._allowed_tasks)} allowed tasks. Lengthen "
+                    f"task_switching_time, shorten ep_time, add tasks, or set "
+                    f"task_switch_replacement=True."
+                )
+
         self._use_rew_for_individual_tasks = use_rew_for_individual_tasks
         self._hull_x_range: tuple[float, float] = hull_x_range
 
@@ -106,12 +142,20 @@ class RlFTEnv(ProprioObsWrapper):
             cmd_interp_speed[1] / FPS,
         )
 
-        # task specification. _task_id_vec is the 3-bit obs one-hot; _active_task
-        # carries the richer directional identity (incl. velocity sign) and is
-        # what command sampling consults. They stay in sync via _activate_task.
-        self._task_id_vec: tuple[int, int, int] = (0, 0, 0)  # [walk, flamingo, tilt]
-        self._active_task: TaskSpec = coerce_task((0, 0, 0))
+        # task specification. _task_id_vec is the 3 obs bits (onehot one-hot or
+        # gait bits); _active_task carries the richer identity (vel_sign for onehot,
+        # command ranges for gait) and is what command sampling consults. They stay
+        # in sync via _activate_task.
+        self._task_id_vec: tuple[int, int, int] = (0, 0, 0)
+        self._active_task: TaskSpec | GaitTask = (
+            GaitTask("idle", (0, 0), (0.0, 0.0), (0.0, 0.0))
+            if task_scheme == GAIT
+            else coerce_task((0, 0, 0))
+        )
         self._task_sample_probs: tuple[float, ...] | None = None  # None = uniform sampling
+        # task indices already drawn this episode (for without-replacement sampling);
+        # cleared at the top of reset().
+        self._used_task_idxs: set[int] = set()
 
         # previous hull velocities and accelerations for jerk calculation
         self._prev_vel_x: float = 0.0
@@ -124,6 +168,7 @@ class RlFTEnv(ProprioObsWrapper):
         self._last_obs_8 = 0.0
         self._last_obs_13 = 0.0
         self._steps_since_hop = 0
+        self._gait_trace = 0.0  # decaying cadence-quality trace (see reward)
 
         # configure observation space to fit the new cmds
         base = self.observation_space
@@ -138,12 +183,15 @@ class RlFTEnv(ProprioObsWrapper):
         # When set, task sampling in step()/reset() is bypassed and `_task_id_vec`
         # is pinned to this value. Used by the algorithm's adversarial eval loop
         # to force each isolated task while still letting commands resample.
-        self._forced_task: TaskSpec | None = None
+        self._forced_task: TaskSpec | GaitTask | None = None
 
-    def _coerce_task(self, task) -> TaskSpec:
-        """Accept a TaskSpec, a task name, or a raw 3-tuple → TaskSpec."""
+    def _coerce_task(self, task) -> TaskSpec | GaitTask:
+        """Accept a TaskSpec/GaitTask, a task name, or a raw 3-tuple → task spec.
+
+        Names resolve against the active scheme's registry (gait → BY_NAME_GAIT,
+        onehot → BY_NAME)."""
         if isinstance(task, str):
-            return BY_NAME[task]
+            return BY_NAME_GAIT[task] if self._task_scheme == GAIT else BY_NAME[task]
         return coerce_task(task)
 
     def set_forced_task(self, task) -> None:
@@ -160,56 +208,120 @@ class RlFTEnv(ProprioObsWrapper):
         must be ordered to match ``allowed_task_mixing``."""
         self._task_sample_probs = tuple(probs) if probs is not None else None
 
-    def _sample_task(self) -> TaskSpec:
+    def _sample_task(self) -> TaskSpec | GaitTask:
         """Pick the next task. Forced > sampling PMF > uniform fallback.
 
         The PMF (set via set_task_sample_probs) is used when its length matches
         the number of allowed tasks — e.g. the adversarial loop pushes a PMF
         over the directional single tasks. Otherwise tasks are drawn uniformly.
+
+        When task_switch_replacement is False, draws are without replacement within
+        an episode: indices already drawn (tracked in _used_task_idxs, cleared at
+        reset) are excluded and the PMF is renormalized over the remaining tasks.
+        The init preflight guarantees enough distinct tasks for one episode's draws,
+        so the candidate pool is never empty here.
         """
         if self._forced_task is not None:
             return self._forced_task
+
+        n = len(self._allowed_tasks)
+        if self._task_switch_replacement:
+            candidates = list(range(n))
+        else:
+            candidates = [i for i in range(n) if i not in self._used_task_idxs]
+            if not candidates:  # safety net; preflight should prevent this
+                self._used_task_idxs.clear()
+                candidates = list(range(n))
+
         if (
             self._task_sample_probs is not None
-            and len(self._task_sample_probs) == len(self._allowed_tasks)
+            and len(self._task_sample_probs) == n
         ):
-            idx = int(np.random.choice(len(self._allowed_tasks), p=self._task_sample_probs))
+            probs = np.array(
+                [self._task_sample_probs[i] for i in candidates], dtype=float
+            )
+            total = probs.sum()
+            idx = int(
+                np.random.choice(candidates, p=probs / total)
+                if total > 0
+                else np.random.choice(candidates)
+            )
         else:
-            idx = int(np.random.randint(len(self._allowed_tasks)))
+            idx = int(np.random.choice(candidates))
+
+        if not self._task_switch_replacement:
+            self._used_task_idxs.add(idx)
         return self._allowed_tasks[idx]
 
-    def _activate_task(self, spec: TaskSpec) -> None:
-        """Make ``spec`` the current task: sync the 3-bit obs vector from it."""
+    def _activate_task(self, spec: TaskSpec | GaitTask) -> None:
+        """Make ``spec`` the current task: sync the 3-bit obs vector from it.
+
+        Reset the gait phase when the task *bits* change so the contact state
+        machine doesn't carry a stale cadence across the switch (walk_forward ↔
+        walk_backward share bits and keep their alternating cadence)."""
+        if spec.task_id_vec != self._task_id_vec:
+            self._reset_gait_phase()
         self._active_task = spec
         self._task_id_vec = spec.task_id_vec
 
+    def _reset_gait_phase(self) -> None:
+        """Clear the leg-contact state machine and cadence trace."""
+        self._last_leg_contact = -1
+        self._last_obs_8 = 0.0
+        self._last_obs_13 = 0.0
+        self._steps_since_hop = 0
+        self._gait_trace = 0.0
+
     def _effective_vel_range(self) -> tuple[float, float]:
-        """Velocity sampling range for the active task — its sign constraint
-        folded into the configured cmd_sample_range."""
-        return constrain_vel_range(self._cmd_sample_range[0], self._active_task.vel_sign)
+        """Velocity sampling range for the active task. Gait: the task's own
+        cmd_vel_range. Onehot: the configured global range with the task's sign
+        constraint folded in."""
+        if self._task_scheme == GAIT:
+            return cast(GaitTask, self._active_task).cmd_vel_range
+        return constrain_vel_range(
+            self._cmd_sample_range[0], cast(TaskSpec, self._active_task).vel_sign
+        )
+
+    def _effective_tilt_range(self) -> tuple[float, float]:
+        """Tilt sampling range for the active task. Gait: the task's own
+        cmd_tilt_range (so walk/hop tasks pin tilt to 0). Onehot: the configured
+        global tilt range (masking zeroes it for non-tilt tasks downstream)."""
+        if self._task_scheme == GAIT:
+            return cast(GaitTask, self._active_task).cmd_tilt_range
+        return self._cmd_sample_range[1]
 
     def _sample_vel_target(self) -> float:
-        """Sample a velocity command target under the active task's sign
-        constraint, honoring the zero-sampling probability."""
+        """Sample a velocity command target from the active task's range,
+        honoring the zero-sampling probability."""
         if np.random.random() > self._cmd_sample_zero[0]:
             return float(np.random.uniform(*self._effective_vel_range()))
+        return 0.0
+
+    def _sample_tilt_target(self) -> float:
+        """Sample a tilt command target from the active task's range, honoring
+        the zero-sampling probability."""
+        if np.random.random() > self._cmd_sample_zero[1]:
+            return float(np.random.uniform(*self._effective_tilt_range()))
         return 0.0
 
     def _compute_task_mixing_reward(
         self, base_obs: np.ndarray, terminated: bool
     ) -> tuple[SupportsFloat, dict[str, float], dict[str, float], dict[str, float]]:
-        task_walk, task_hop, task_tilt = [bool(i) for i in self._task_id_vec]
         cmd_walk, cmd_tilt = self._effective_cmd_vec()
 
-        # Combined tasks have no expert to drive BC, so they always need the
-        # task-specific RL signal. Individual tasks only get task-specific
-        # rewards when explicitly enabled — otherwise expert BC drives learning
-        # and the RL term is just stability.
-        is_combined = sum(self._task_id_vec) > 1
-        if not is_combined and not self._use_rew_for_individual_tasks:
-            task_walk = task_hop = task_tilt = False
-            cmd_walk = cmd_tilt = 0.0
-        
+        # Combined tasks have no single expert to drive BC, so they always need the
+        # task-specific RL signal; resolve_task returns None for them (and for
+        # legacy onehot combos like (1,0,1)). Individual tasks only get the task
+        # reward when explicitly enabled — otherwise expert BC drives learning and
+        # the RL term is the (always-on) regularization/stability layer.
+        is_combined = (
+            resolve_single_task(self._task_id_vec, cmd_walk, cmd_tilt, self._task_scheme) is None
+        )
+        enable_task_reward = is_combined or self._use_rew_for_individual_tasks
+
+        # gait mode the reward conditions on (walk / hop / quiet), scheme-aware.
+        mode = reward_mode(self._task_id_vec, cmd_walk, self._task_scheme)
+
         r, r_terms, r_raws, r_weights, state_update = compositional_rew(
             env=cast(BipedalWalker, self.unwrapped),
             base_obs=base_obs,
@@ -223,30 +335,34 @@ class RlFTEnv(ProprioObsWrapper):
                 last_obs_8=self._last_obs_8,
                 last_obs_13=self._last_obs_13,
                 steps_since_hop=self._steps_since_hop,
+                gait_trace=self._gait_trace,
             ),
-            cmd_vel=cmd_walk if task_walk else None,
-            cmd_tilt=cmd_tilt if task_tilt else None,
-            cmd_flamingo=task_hop,
+            task_bits=self._task_id_vec,
+            # cmd_walk / cmd_tilt are the conditioned tracking targets. Onehot masks
+            # them by task bit; gait leaves them raw (each task's command ranges
+            # already zero the irrelevant one), so either way they double as the
+            # "hold 0" anchors (stationary → hold still, non-tilt → hold upright).
+            cmd_vel=cmd_walk,
+            cmd_tilt=cmd_tilt,
+            mode=mode,
+            enable_task_reward=enable_task_reward,
             weight_overrides=None,
         )
-        # update hop state
+        # update gait / contact bookkeeping
         self._last_leg_contact = state_update.last_leg_contact
         self._last_obs_8 = state_update.last_obs_8
         self._last_obs_13 = state_update.last_obs_13
         self._steps_since_hop = state_update.steps_since_hop
+        self._gait_trace = state_update.gait_trace
 
         return r, r_terms, r_raws, r_weights
 
     def _effective_cmd_vec(self) -> tuple[float, float]:
-        """Mask the raw cmd by the active task flags so the policy only sees
-        commands relevant to the current task. Walk flag (task_id_vec[0]) gates
-        vel tracking; tilt flag (task_id_vec[2]) gates tilt tracking. Flamingo
-        alone zeros both. Multiplicative gating supports any combination
-        (e.g. walk+tilt = (1, 0, 1) → both active)."""
-        return (
-            self._cmd_vec[0] * float(self._task_id_vec[0]),
-            self._cmd_vec[1] * float(self._task_id_vec[2]),
-        )
+        """The command vector the policy/reward sees. Scheme-aware (see
+        tasks.effective_cmd): onehot masks vel by the walk bit and tilt by the
+        tilt bit; gait passes the raw commands through (each task's ranges already
+        zero the irrelevant one)."""
+        return effective_cmd(self._cmd_vec, self._task_id_vec, self._task_scheme)
 
     def _derive_full_obs(
         self,
@@ -279,11 +395,11 @@ class RlFTEnv(ProprioObsWrapper):
             self._compute_task_mixing_reward(base_obs, term)
         )
         info["task"] = self._task_id_vec
-        # directional task label (walk_forward/walk_backward/flamingo/tilt), derived
-        # from the obs bits + effective velocity sign so it's correct even when
-        # _task_id_vec is driven externally (manual_ctrl_mode). Combined tasks fall
-        # back to a composed name (e.g. "walk+tilt").
-        _spec = resolve_task(self._task_id_vec, self._effective_cmd_vec()[0])
+        # directional task label, derived from the obs bits + effective commands so
+        # it's correct even when _task_id_vec is driven externally (manual_ctrl_mode).
+        # Combined tasks fall back to a composed name (e.g. "walk+tilt").
+        _eff = self._effective_cmd_vec()
+        _spec = resolve_single_task(self._task_id_vec, _eff[0], _eff[1], self._task_scheme)
         info["task_name"] = (
             _spec.name if _spec is not None else _name_from_bits(self._task_id_vec)
         )
@@ -310,12 +426,7 @@ class RlFTEnv(ProprioObsWrapper):
             and self._cmd_switch_steps[1] < self._max_steps
             and self._step_count % self._cmd_switch_steps[1] == 0
         ):
-            new_tilt_target = (
-                float(np.random.uniform(*self._cmd_sample_range[1]))
-                if np.random.random() > self._cmd_sample_zero[1]
-                else 0.0
-            )
-            self._cmd_vec_target = (self._cmd_vec_target[0], new_tilt_target)
+            self._cmd_vec_target = (self._cmd_vec_target[0], self._sample_tilt_target())
 
         delta_vel = self._cmd_vec_target[0] - self._cmd_vec[0]
         delta_tilt = self._cmd_vec_target[1] - self._cmd_vec[1]
@@ -462,28 +573,42 @@ class RlFTEnv(ProprioObsWrapper):
         pygame.font.init()
         font = pygame.font.SysFont("Courier New", 16, bold=True)
 
-        # show the effective (masked) cmd — i.e. what the policy actually sees
+        # show the effective cmd — i.e. what the policy actually sees
         cmd_vel, cmd_tilt = self._effective_cmd_vec()
-        task_vel, task_tilt = (self._task_id_vec[0], self._task_id_vec[2])
 
-        # compose task name from active flags so combinations (e.g. walk+tilt) read naturally.
-        # direction qualifier attaches only to the walk component since it's the locomotion task.
+        # compose task name from the active gait/flags so combinations read naturally.
         parts: list[str] = []
-        if self._task_id_vec[0]:
-            if cmd_vel == 0:
-                parts.append("walk @ 0")
-            elif cmd_vel > 0:
-                parts.append("walk forward")
-            else:
-                parts.append("walk backward")
-        if self._task_id_vec[1]:
-            parts.append("flamingo")
-        if self._task_id_vec[2]:
-            parts.append("tilt")
+        if self._task_scheme == GAIT:
+            two_leg, one_leg = self._task_id_vec[0], self._task_id_vec[1]
+            move = "forward" if cmd_vel > 0 else ("backward" if cmd_vel < 0 else None)
+            if one_leg:
+                parts.append(f"hop {move}" if move else "hop in place")
+            elif two_leg:
+                if move:
+                    parts.append(f"walk {move}")
+                if cmd_tilt != 0:
+                    parts.append("tilt")
+                if not parts:
+                    parts.append("stand")
+            # gait masks nothing → both commands are always live
+            cmd_vel_str = f"{cmd_vel:+.2f}"
+            cmd_tilt_str = f"{cmd_tilt:+.2f}"
+        else:  # onehot: direction qualifier attaches to the walk component only
+            task_vel, task_tilt = (self._task_id_vec[0], self._task_id_vec[2])
+            if self._task_id_vec[0]:
+                if cmd_vel == 0:
+                    parts.append("walk @ 0")
+                elif cmd_vel > 0:
+                    parts.append("walk forward")
+                else:
+                    parts.append("walk backward")
+            if self._task_id_vec[1]:
+                parts.append("flamingo")
+            if self._task_id_vec[2]:
+                parts.append("tilt")
+            cmd_vel_str = f"{cmd_vel:+.2f}" if task_vel else "DISABLED"
+            cmd_tilt_str = f"{cmd_tilt:+.2f}" if task_tilt else "DISABLED"
         task_name = " + ".join(parts) if parts else "idle"
-
-        cmd_vel_str = f"{cmd_vel:+.2f}" if task_vel else "DISABLED"
-        cmd_tilt_str = f"{cmd_tilt:+.2f}" if task_tilt else "DISABLED"
 
         lines = [
             f"task:  {task_name}",
@@ -507,10 +632,16 @@ class RlFTEnv(ProprioObsWrapper):
 
         self._draw_task_info(env)
 
-        if self._task_id_vec[0]:
+        # gait masks nothing, so both commands are always live → always draw both
+        # arrows. Onehot only draws the arrow for an active task bit.
+        if self._task_scheme == GAIT:
             self._draw_velocity_arrows(env)
-        if self._task_id_vec[2]:
             self._draw_tilt_arrows(env)
+        else:
+            if self._task_id_vec[0]:
+                self._draw_velocity_arrows(env)
+            if self._task_id_vec[2]:
+                self._draw_tilt_arrows(env)
 
         # re-grab the frame after drawing on surf
         return np.transpose(
@@ -524,10 +655,9 @@ class RlFTEnv(ProprioObsWrapper):
         self._prev_accel_x = 0.0
         self._prev_accel_y = 0.0
 
-        self._last_leg_contact = -1
-        self._last_obs_8 = 0.0
-        self._last_obs_13 = 0.0
-        self._steps_since_hop = 0
+        self._reset_gait_phase()
+        # start a fresh without-replacement pool for this episode
+        self._used_task_idxs.clear()
 
         obs, info = super().reset(seed=seed, options=options)
 
@@ -537,14 +667,9 @@ class RlFTEnv(ProprioObsWrapper):
         if not self.manual_ctrl_mode:
             self._activate_task(self._sample_task())
 
-        # sample initial command vec (velocity honors the active task's sign)
+        # sample initial command vec from the active task's ranges
         cmd_vel = self._sample_vel_target() if not self.manual_ctrl_mode else 0.0
-        cmd_tilt = (
-            float(np.random.uniform(*self._cmd_sample_range[1]))
-            if not self.manual_ctrl_mode
-            and np.random.random() > self._cmd_sample_zero[1]
-            else 0.0
-        )
+        cmd_tilt = self._sample_tilt_target() if not self.manual_ctrl_mode else 0.0
         self._cmd_vec = (cmd_vel, cmd_tilt)
         self._cmd_vec_target = self._cmd_vec
 

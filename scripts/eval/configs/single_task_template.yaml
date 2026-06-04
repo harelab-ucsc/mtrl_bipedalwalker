@@ -1,0 +1,44 @@
+# Template config for scripts/eval/singletask_eval.py — copy and edit for a new run:
+#     cp configs/singletask_default.yaml configs/myexp.yaml
+#     python scripts/eval/singletask_eval.py myexp        # by name
+#     python scripts/eval/singletask_eval.py path/to/x.yaml
+
+eval_name: singletask_default   # names the output dir under scripts/eval/output/
+task_scheme: onehot  # legacy one-hot (walk, flamingo, tilt) eval; gait is the default
+
+# --- episode / sampling ---
+ep_time: 10              # seconds per episode -> the survival window (N = ep_time * 50 frames)
+modulate_period: 3       # re-sample the held task's command every N seconds
+episodes_per_task: 5000  # episodes per (model, task)
+episode_chunk: 100       # episodes per pool job (load balancing)
+seed_base: 42            # episode i uses the same seed across models (fair comparison)
+
+# --- command sampling ranges ---
+cmd_vel_forward_range: [0.0, 5.0]    # walk_forward velocity (m/s)
+cmd_vel_backward_range: [-5.0, 0.0]  # walk_backward velocity (m/s)
+cmd_tilt_range: [-0.75, 0.75]        # tilt hull-angle command (rad)
+
+# --- run controls ---
+only_models: null        # list of model names to run (subset), or null for all
+date_suffix: true        # append a timestamp to the output dir name (set false to overwrite)
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle).
+# ref:  checkpoint path relative to models/ (hybrid: null). HARD-CODED on purpose —
+#       point it at the exact checkpoint you want (e.g. the latest, not best/best_model.zip).
+# desc: shown in models.md / meta.json (the chart legend uses `name`).
+models:
+  - name: ppo_bc/pretrain/1.0.0
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.0/rl_model_2799664_steps.zip
+    desc: "PPO+BC pretrained; Unif task sampling; NLL loss; BC_COEF = 0.2"
+
+  - name: rudin/distill/1.0.0
+    kind: torch
+    ref: rudin/distill/1.0.0/distill_79.pt
+    desc: "DAgger distilled; Unif task sampling; MSE loss"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle (topline reference baseline)"

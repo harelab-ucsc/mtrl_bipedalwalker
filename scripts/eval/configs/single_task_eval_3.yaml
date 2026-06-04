@@ -1,0 +1,62 @@
+# Experiment config for scripts/eval/single_task_eval.py. Select with:
+#     python scripts/eval/single_task_eval.py single_task_eval_3
+#
+# Final single-task comparison: two baselines (rudin / rudin_adv) vs our method
+# (ppo_bc / ppo_bc_adv at MSE 1.2.1 and NLL 1.3.1), all combination-finetuned,
+# plus the hybrid oracle as a topline reference.
+
+eval_name: singletask_eval_3
+task_scheme: onehot  # legacy one-hot (walk, flamingo, tilt) eval; gait is the default
+date_suffix: false
+ep_time: 10            # seconds per episode -> the survival window
+modulate_period: 3     # re-sample the task command every N seconds
+episodes_per_task: 10000
+episode_chunk: 100     # episodes per pool job (load balancing)
+seed_base: 42          # episode i uses the same seed across models
+
+cmd_vel_forward_range: [0.0, 5.0]
+cmd_vel_backward_range: [-5.0, 0.0]
+cmd_tilt_range: [-0.75, 0.75]
+
+only_models: null
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle).
+# ref:  checkpoint path relative to models/ (hybrid: null). HARD-CODED on purpose —
+#       point it at the exact checkpoint you want (the final, not best/best_model.zip).
+# desc: shown in models.md / meta.json (the chart legend uses `name`).
+models:
+  - name: rudin/combination/1.0.0
+    kind: sb3
+    ref: rudin/combination/1.0.0/final.zip
+    desc: "Baseline (Rudin); combination finetuned; uniform task selection"
+
+  - name: rudin_adv/combination/1.0.0
+    kind: sb3
+    ref: rudin_adv/combination/1.0.0/final.zip
+    desc: "Baseline (Rudin); combination finetuned; adversarial task selection"
+
+  - name: ppo_bc/combination/1.2.1
+    kind: sb3
+    ref: ppo_bc/combination/1.2.1/final.zip
+    desc: "Ours; combination finetuned; MSE BC loss @ 0.2 coef; uniform task selection"
+
+  - name: ppo_bc_adv/combination/1.2.1
+    kind: sb3
+    ref: ppo_bc_adv/combination/1.2.1/final.zip
+    desc: "Ours; combination finetuned; MSE BC loss @ 0.2 coef; adversarial task selection"
+
+  - name: ppo_bc/combination/1.3.1
+    kind: sb3
+    ref: ppo_bc/combination/1.3.1/final.zip
+    desc: "Ours; combination finetuned; NLL BC loss @ 0.7 coef; uniform task selection"
+
+  - name: ppo_bc_adv/combination/1.3.1
+    kind: sb3
+    ref: ppo_bc_adv/combination/1.3.1/final.zip
+    desc: "Ours; combination finetuned; NLL BC loss @ 0.7 coef; adversarial task selection"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle (topline reference baseline)"

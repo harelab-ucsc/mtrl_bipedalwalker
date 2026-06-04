@@ -29,45 +29,66 @@ from mdp.bipedal_walker.student import (
     OBS_SIZE_V2,
     ACT_SIZE,
 )
+from mdp.bipedal_walker.tasks import GAIT, resolve_single_task
 from train_config import PRESETS, DistillConfig
 
 
-# task ids: 0 walk forward, 1 walk backward, 2 flamingo, 3 tilt
-def configure_env(e: DistillEnv, task_id: int, mix: bool):
+# onehot task ids: 0 walk forward, 1 walk backward, 2 flamingo, 3 tilt
+# gait task ids: index into cfg.gait_tasks (walk fwd/bwd, hop fwd/bwd, tilt)
+def configure_env(e: DistillEnv, task_id: int, cfg: DistillConfig):
     """Configure the env's hull reset + command sampling for a given task.
 
-    ``mix`` controls whether irrelevant commands are mixed in (so the student
-    learns to ignore them) or reset to 0 for clean inputs.
+    All sampling knobs (switch/interp speeds, sample ranges, zero-probabilities,
+    hull spawn x_range) come from ``cfg`` — see DistillConfig.
+    ``cfg.mix_irrelevant_input`` controls whether irrelevant commands are mixed
+    in (so the student learns to ignore them) or reset to 0 for clean inputs.
     """
+    vel_switch, tilt_switch = cfg.cmd_switching_time
+    vel_interp, tilt_interp = cfg.cmd_interp_speed
+    vel_zero, tilt_zero = cfg.cmd_sample_zero
+
+    # gait: the GaitTask's own command ranges fully define what's sampled (vel and
+    # tilt ranges already zero whatever is irrelevant), so no mix/mask handling.
+    if cfg.task_scheme == GAIT:
+        t = cfg.gait_tasks[task_id]
+        e.config_hull_reset(x_range=cfg.hull_x_range)
+        e.config_cmd_vel(
+            sample_range=t.cmd_vel_range, interp_speed=vel_interp,
+            switch_time=vel_switch, zero_prob=vel_zero,
+        )
+        e.config_cmd_tilt(
+            sample_range=t.cmd_tilt_range, interp_speed=tilt_interp,
+            switch_time=tilt_switch, zero_prob=tilt_zero,
+        )
+        return
+
+    mix = cfg.mix_irrelevant_input
+    (vel_lo, vel_hi), tilt_range = cfg.cmd_sample_range
+
+    def cmd_vel(sample_range):
+        e.config_cmd_vel(sample_range=sample_range, interp_speed=vel_interp, switch_time=vel_switch, zero_prob=vel_zero)
+
+    def cmd_tilt():
+        e.config_cmd_tilt(sample_range=tilt_range, interp_speed=tilt_interp, switch_time=tilt_switch, zero_prob=tilt_zero)
+
+    e.config_hull_reset(x_range=cfg.hull_x_range)
+
     if task_id == 0:  # walk forward
-        e.config_hull_reset(x_range=(0.0, 40.0))
-        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_time=0.5, switch_time=3, zero_prob=0.2)
-        if mix:  # mix in random tilt commands as well
-            e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
-        else:  # reset tilt command to 0 for clean input
-            e.config_cmd_tilt(zero_prob=1)
+        cmd_vel((0.0, vel_hi))
+        cmd_tilt() if mix else e.config_cmd_tilt(zero_prob=1)  # mix random tilt / reset to 0
     elif task_id == 1:  # walk backward
-        e.config_hull_reset(x_range=(40.0, 80.0))
-        e.config_cmd_vel(sample_range=(-5.0, 0.0), interp_time=0.5, switch_time=3, zero_prob=0.2)
-        if mix:
-            e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
-        else:
-            e.config_cmd_tilt(zero_prob=1)
+        cmd_vel((vel_lo, 0.0))
+        cmd_tilt() if mix else e.config_cmd_tilt(zero_prob=1)
     elif task_id == 2:  # flamingo
-        e.config_hull_reset(x_range=(20.0, 60.0))
         if mix:  # mix in random tilt and velocity commands
-            e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
-            e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+            cmd_vel((vel_lo, vel_hi))
+            cmd_tilt()
         else:  # reset tilt and velocity command to 0 for clean input
             e.config_cmd_vel(zero_prob=1)
             e.config_cmd_tilt(zero_prob=1)
     elif task_id == 3:  # tilt
-        e.config_hull_reset(x_range=(20.0, 60.0))
-        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
-        if mix:  # mix in random velocity commands
-            e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
-        else:  # reset velocity command to 0 for clean input
-            e.config_cmd_vel(zero_prob=1)
+        cmd_tilt()
+        cmd_vel((vel_lo, vel_hi)) if mix else e.config_cmd_vel(zero_prob=1)  # mix random vel / reset to 0
 
 
 def main(cfg: DistillConfig):
@@ -82,17 +103,49 @@ def main(cfg: DistillConfig):
     env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=cfg.ep_time)
     eval_env = DistillEnv(make("BipedalWalker-v3", render_mode=None), ep_time=cfg.eval_ep_time)
 
-    # load models
+    gait = cfg.task_scheme == GAIT
+
+    # load models. Gait keys experts by directional name (resolve_task returns it);
+    # onehot keeps the legacy index-ordered list.
     print("Loading experts...")
-    EXPERT_MODELS = [
-        PPO.load(MODELS_DIR / p, env=None, device="cpu") for p in cfg.expert_paths
-    ]
+    if gait:
+        gait_tasks = list(cfg.gait_tasks)
+        task_names = [t.name for t in gait_tasks]
+        EXPERTS = {
+            name: PPO.load(MODELS_DIR / p, env=None, device="cpu")
+            for name, p in cfg.gait_expert_paths.items()
+        }
+    else:
+        task_names = list(cfg.task_names)
+        EXPERT_MODELS = [
+            PPO.load(MODELS_DIR / p, env=None, device="cpu") for p in cfg.expert_paths
+        ]
     print("Loading student...")
     student = cfg.make_student()
 
-    n_tasks = len(cfg.task_names)
+    n_tasks = len(task_names)
+
+    def task_bits(task_id: int):
+        """The 3 obs bits for a task id (gait_bits under gait, one-hot under onehot)."""
+        if gait:
+            return gait_tasks[task_id].gait_bits
+        if task_id in (0, 1):
+            return [1, 0, 0]  # walk
+        if task_id == 2:
+            return [0, 1, 0]  # flamingo
+        return [0, 0, 1]  # tilt
 
     def forwardExpert(obs: np.ndarray, task_id: int, cmd_vel: float, cmd_tilt: float = 0.0) -> np.ndarray:
+        if gait:
+            # route by the directional task resolve_task picks from the runtime
+            # commands (handles walk-vs-tilt and the 0-vel → forward-expert rule).
+            spec = resolve_single_task(gait_tasks[task_id].gait_bits, cmd_vel, cmd_tilt, GAIT)
+            assert spec is not None, "single gait tasks always resolve to one expert"
+            cmd = cmd_tilt if spec.name == "tilt" else cmd_vel
+            action, _ = EXPERTS[spec.name].predict(np.append(obs, cmd), deterministic=True)
+            return action
+
+        # --- onehot (legacy) ---
         # body_tilt expert expects [proprio, cmd_tilt]
         if task_id == 3:
             action, _ = EXPERT_MODELS[3].predict(np.append(obs, cmd_tilt), deterministic=True)
@@ -152,8 +205,8 @@ def main(cfg: DistillConfig):
         task_losses = []
         all_time_alive = []
         with torch.no_grad():
-            for task_id, task_name in enumerate(cfg.task_names):
-                configure_env(eval_env, task_id, cfg.mix_irrelevant_input)
+            for task_id, task_name in enumerate(task_names):
+                configure_env(eval_env, task_id, cfg)
                 obs, info = eval_env.reset()
                 cmd_vel = info["cmd"]["x_vel"]
                 cmd_tilt = info["cmd"]["tilt"]
@@ -174,7 +227,7 @@ def main(cfg: DistillConfig):
                         alive += 1
 
                     act_expert = forwardExpert(obs, task_id, cmd_vel, cmd_tilt)
-                    obs_s = StudentModel.obs(obs, task_id, cmd_vel, cmd_tilt)
+                    obs_s = StudentModel.obs(obs, cmd_vel, cmd_tilt, task_bits(task_id))
                     pred = student(torch.tensor(obs_s, dtype=torch.float32))
                     target = torch.tensor(act_expert, dtype=torch.float32)
 
@@ -229,7 +282,7 @@ def main(cfg: DistillConfig):
                     current_task = int(
                         np.random.choice(n_tasks, p=getTaskPMF(task_live_time, cfg.adversarial_k))
                     )
-                    configure_env(env, current_task, cfg.mix_irrelevant_input)
+                    configure_env(env, current_task, cfg)
                     obs, info = env.reset()
                     cmd_vel = info["cmd"]["x_vel"]
                     cmd_tilt = info["cmd"]["tilt"]
@@ -238,7 +291,7 @@ def main(cfg: DistillConfig):
                 # CLEAN expert action — saved as the training label
                 act_expert = forwardExpert(obs, current_task, cmd_vel, cmd_tilt)
 
-                obs_s = StudentModel.obs(obs, current_task, cmd_vel, cmd_tilt)
+                obs_s = StudentModel.obs(obs, cmd_vel, cmd_tilt, task_bits(current_task))
                 act_student = student(torch.tensor(obs_s, dtype=torch.float32)).numpy()
 
                 # additive diagonal gaussian noise on the EXECUTED action only,
@@ -317,7 +370,7 @@ def main(cfg: DistillConfig):
         with torch.no_grad():
             pred_all = student(x_full)
             total_D = len(task_ids_all)
-            for task_id, task_name in enumerate(cfg.task_names):
+            for task_id, task_name in enumerate(task_names):
                 indices = [i for i, t in enumerate(task_ids_all) if t == task_id]
                 if indices:
                     idx_t = torch.tensor(indices)

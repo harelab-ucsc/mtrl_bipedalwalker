@@ -5,7 +5,9 @@ from torch import nn
 BASE_OBS_SIZE = 14
 OBS_SIZE_V2 = (
     BASE_OBS_SIZE + 2 + 3
-)  # base obs + cmd_vel + cmd_tilt + 3 one-hot task bits (walk=100, flamingo=010, tilt=001)
+)  # base obs + cmd_vel + cmd_tilt + 3 trailing task bits. The bits are scheme-
+# dependent (see mdp.bipedal_walker.tasks): gait (two_leg, one_leg, 0) by default,
+# or legacy one-hot (walk, flamingo, tilt). The dim is identical either way.
 ACT_SIZE = 4
 
 # Student actor mirrors the ppo_bc actor trunk + head (see
@@ -37,19 +39,15 @@ class StudentModel(nn.Module):
     @staticmethod
     def obs(
         base_obs: np.ndarray,
-        task_id: int,
         cmd_vel: float,
         cmd_tilt: float,
-        task_bit_override: tuple[int, int, int] | None = None,
+        task_bits,
     ) -> np.ndarray:
-        task_bits = task_bit_override
+        """Assemble the student obs: ``[base_obs, cmd_vel, cmd_tilt, *task_bits]``.
 
-        if task_bits is None:  # determine task bits implicitly
-            if task_id == 0 or task_id == 1:
-                task_bits = [1, 0, 0]  # walk
-            elif task_id == 2:
-                task_bits = [0, 1, 0]  # flamingo
-            else:
-                task_bits = [0, 0, 1]  # body_tilt
-
+        ``task_bits`` is the 3-element trailing identifier — under the gait scheme
+        the task's ``gait_bits`` ``(two_leg, one_leg, 0)``; under legacy onehot the
+        one-hot ``(walk, flamingo, tilt)``. The caller owns the scheme, so this just
+        concatenates whatever bits it's handed.
+        """
         return np.concatenate([base_obs, [cmd_vel, cmd_tilt], task_bits])

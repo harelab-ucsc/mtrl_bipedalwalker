@@ -10,6 +10,7 @@ import torch
 from utils.paths import rudin_distill_ckpt
 from wrappers.bipedal_walker.distill_env import DistillEnv
 from mdp.bipedal_walker.student import StudentModel
+from mdp.bipedal_walker.tasks import GAIT, ONEHOT
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -23,7 +24,11 @@ MODELS = [
     ("unif 1.0.0",      False, "1.0.0", True,  "best.pt"),
 ]
 
-TASK_NAMES = {
+# obs-bit scheme: GAIT (default, 2.x.x) or ONEHOT (legacy 1.x.x). Picks both the
+# keyboard task menu and which 3 bits are written into the student obs.
+TASK_SCHEME = GAIT
+
+TASK_NAMES_ONEHOT = {
     0: "walk forward",
     1: "walk backward",
     2: "flamingo",
@@ -31,7 +36,16 @@ TASK_NAMES = {
     4: "walk forward + flamingo",
     5: "walk backward + flamingo",
 }
-N_TASKS = 6
+TASK_NAMES_GAIT = {
+    0: "walk forward",
+    1: "walk backward",
+    2: "hop forward",
+    3: "hop backward",
+    4: "body tilt",
+    5: "walk forward + tilt",
+}
+TASK_NAMES = TASK_NAMES_GAIT if TASK_SCHEME == GAIT else TASK_NAMES_ONEHOT
+N_TASKS = len(TASK_NAMES)
 
 ENV_W, ENV_H = 600, 400
 MAX_COLS = 2
@@ -45,47 +59,105 @@ _sim_res = False
 _sim_task_delta = 0
 
 
-def configure_env(e: DistillEnv, task_id: int, mix: bool):
-    """Config one env to a task; returns the 3-bit active-task vector for rendering."""
+def configure_env_onehot(e: DistillEnv, task_id: int, mix: bool):
+    """Config one env to an onehot-scheme task; returns the 3-bit vector fed to
+    StudentModel.obs (and used for arrow rendering)."""
     e.set_task(task_id)
 
     if task_id == 0:  # walk forward
         e.config_hull_reset(x_range=(0.0, 40.0))
-        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_time=0.5, switch_time=3, zero_prob=0.2)
-        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15) if mix else e.config_cmd_tilt(zero_prob=1)
+        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_speed=1.0, zero_prob=0.15) if mix else e.config_cmd_tilt(zero_prob=1)
         active = (1, 0, 0)
     elif task_id == 1:  # walk backward
         e.config_hull_reset(x_range=(40.0, 80.0))
-        e.config_cmd_vel(sample_range=(-5.0, 0.0), interp_time=0.5, switch_time=3, zero_prob=0.2)
-        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15) if mix else e.config_cmd_tilt(zero_prob=1)
+        e.config_cmd_vel(sample_range=(-5.0, 0.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_speed=1.0, zero_prob=0.15) if mix else e.config_cmd_tilt(zero_prob=1)
         active = (1, 0, 0)
     elif task_id == 2:  # flamingo
         e.config_hull_reset(x_range=(20.0, 60.0))
         if mix:
-            e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2)
-            e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
+            e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_speed=5.0, zero_prob=0.2)
+            e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_speed=1.0, zero_prob=0.15)
         else:
             e.config_cmd_vel(zero_prob=1)
             e.config_cmd_tilt(zero_prob=1)
         active = (0, 1, 0)
     elif task_id == 3:  # tilt
         e.config_hull_reset(x_range=(20.0, 60.0))
-        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15)
-        e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_time=0.5, zero_prob=0.2) if mix else e.config_cmd_vel(zero_prob=1)
+        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_speed=1.0, zero_prob=0.15)
+        e.config_cmd_vel(sample_range=(-5.0, 5.0), switch_time=3, interp_speed=5.0, zero_prob=0.2) if mix else e.config_cmd_vel(zero_prob=1)
         active = (0, 0, 1)
     elif task_id == 4:  # walk forward + flamingo
         e.config_hull_reset(x_range=(0.0, 40.0))
-        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_time=0.5, switch_time=3, zero_prob=0.2)
-        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15) if mix else e.config_cmd_tilt(zero_prob=1)
+        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_speed=1.0, zero_prob=0.15) if mix else e.config_cmd_tilt(zero_prob=1)
         active = (1, 1, 0)
     else:  # task_id == 5: walk backward + flamingo
         e.config_hull_reset(x_range=(40.0, 80.0))
-        e.config_cmd_vel(sample_range=(-5.0, 0.0), interp_time=0.5, switch_time=3, zero_prob=0.2)
-        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_time=0.5, zero_prob=0.15) if mix else e.config_cmd_tilt(zero_prob=1)
+        e.config_cmd_vel(sample_range=(-5.0, 0.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_speed=1.0, zero_prob=0.15) if mix else e.config_cmd_tilt(zero_prob=1)
         active = (1, 1, 0)
 
     e.set_active_tasks(list(active))
     return active
+
+
+def configure_env_gait(e: DistillEnv, task_id: int, mix: bool):
+    """Config one env to a gait-scheme task; returns the gait_bits
+    (two_leg, one_leg, 0) fed to StudentModel.obs. Command ranges mirror
+    SINGLE_TASKS_GAIT / COMBINATION_TASKS_GAIT; gait masks nothing. ``mix`` is
+    unused here (gait command ranges already zero whatever is irrelevant)."""
+    del mix
+    e.set_task(task_id)
+
+    if task_id == 0:  # walk forward — two-leg, vel > 0
+        e.config_hull_reset(x_range=(0.0, 40.0))
+        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(zero_prob=1)
+        gait_bits = (1, 0, 0)
+        render_active = (1, 0, 0)  # vel arrow only
+    elif task_id == 1:  # walk backward — two-leg, vel < 0
+        e.config_hull_reset(x_range=(40.0, 80.0))
+        e.config_cmd_vel(sample_range=(-5.0, 0.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(zero_prob=1)
+        gait_bits = (1, 0, 0)
+        render_active = (1, 0, 0)
+    elif task_id == 2:  # hop forward — one-leg, vel > 0
+        e.config_hull_reset(x_range=(0.0, 40.0))
+        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(zero_prob=1)
+        gait_bits = (0, 1, 0)
+        render_active = (0, 1, 0)  # vel arrow (hop active)
+    elif task_id == 3:  # hop backward — one-leg, vel < 0
+        e.config_hull_reset(x_range=(40.0, 80.0))
+        e.config_cmd_vel(sample_range=(-5.0, 0.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(zero_prob=1)
+        gait_bits = (0, 1, 0)
+        render_active = (0, 1, 0)
+    elif task_id == 4:  # body tilt — two-leg, vel pinned 0, tilt active
+        e.config_hull_reset(x_range=(20.0, 60.0))
+        e.config_cmd_vel(zero_prob=1)
+        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_speed=1.0, zero_prob=0.15)
+        gait_bits = (1, 0, 0)
+        render_active = (0, 0, 1)  # tilt arrow only
+    else:  # task_id == 5: walk forward + tilt — two-leg, vel > 0, tilt active
+        e.config_hull_reset(x_range=(0.0, 40.0))
+        e.config_cmd_vel(sample_range=(0.0, 5.0), interp_speed=5.0, switch_time=3, zero_prob=0.2)
+        e.config_cmd_tilt(sample_range=(-0.75, 0.75), switch_time=3, interp_speed=1.0, zero_prob=0.15)
+        gait_bits = (1, 0, 0)
+        render_active = (1, 0, 1)  # both arrows
+
+    e.set_active_tasks(list(render_active))
+    return gait_bits
+
+
+def configure_env(e: DistillEnv, task_id: int, mix: bool):
+    """Dispatch on the active scheme; returns the 3-bit vector fed to
+    StudentModel.obs (gait_bits under gait, one-hot under onehot)."""
+    if TASK_SCHEME == GAIT:
+        return configure_env_gait(e, task_id, mix)
+    return configure_env_onehot(e, task_id, mix)
 
 
 def main():
@@ -94,7 +166,8 @@ def main():
     listener = keyboard.Listener(on_press=on_press)
     listener.start()
 
-    print(f"=== Comparison: {[label for label, *_ in MODELS]} ===")
+    print(f"=== Comparison ({TASK_SCHEME} scheme): {[label for label, *_ in MODELS]} ===")
+    print(f"Tasks: {TASK_NAMES}")
 
     print("Loading environments...")
     envs: list[DistillEnv] = []
@@ -191,7 +264,7 @@ def main():
                 if done_list[i]:
                     continue
                 obs_s = StudentModel.obs(
-                    obs_list[i], task_id, cmd_vels[i], cmd_tilts[i], active_bits[i]
+                    obs_list[i], cmd_vels[i], cmd_tilts[i], active_bits[i]
                 )
                 action = model(torch.tensor(obs_s, dtype=torch.float32))
                 obs, _, term, trunc, info = env.step(action)

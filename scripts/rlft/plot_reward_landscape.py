@@ -34,7 +34,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from tqdm import tqdm
 
-from utils.paths import MODELS_DIR, rudin_distill_ckpt
+from utils.paths import MODELS_DIR
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 from mdp.bipedal_walker.rlft_policy import RlFTPolicy
 from mdp.bipedal_walker.student import HIDDEN_BC
@@ -48,9 +48,8 @@ from mdp.bipedal_walker.tasks import SINGLE_TASKS
 # "ppo"     -> load a fully-trained PPO .zip (finetuned or pretrained critic)
 MODEL_SOURCE = "distill"
 
-# Used when MODEL_SOURCE == "distill" (resolves rudin[_adv]/distill/<v>/best.pt).
-ADVERSARIAL = False
-DISTILL_VERSION = "1.0.0"
+# Used when MODEL_SOURCE == "distill" (bare path under MODELS_DIR to the student .pt).
+DISTILL_CKPT = "rudin/distill/1.0.0/best.pt"
 
 # Used when MODEL_SOURCE == "ppo" (models/-relative).
 EXPERIMENT_NAME = "rudin/finetuned/1.0.0"
@@ -117,7 +116,7 @@ def load_model(env: RlFTEnv) -> PPO:
                 activation_fn=torch.nn.ELU,
             ),
         )
-        student_path = rudin_distill_ckpt(ADVERSARIAL, DISTILL_VERSION)
+        student_path = MODELS_DIR / DISTILL_CKPT
         print(f"  Loading distilled weights: {student_path}")
         _load_student_actor(model, student_path)
     else:
@@ -303,7 +302,7 @@ def show_plots(
 
 def main():
     label = (
-        rudin_distill_ckpt(ADVERSARIAL, DISTILL_VERSION)
+        MODELS_DIR / DISTILL_CKPT
         if MODEL_SOURCE == "distill"
         else f"{EXPERIMENT_NAME}/{MODEL_CHECKPOINT}"
     )

@@ -53,19 +53,22 @@ def make_env(cfg: FinetuneConfig):
             ep_time=cfg.ep_time,
             cmd_switching_time=cfg.cmd_switching_time,
             task_switching_time=cfg.task_switching_time,
+            task_switch_replacement=cfg.task_switch_replacement,
             cmd_interp_speed=cfg.cmd_interp_speed,
             cmd_sample_range=cfg.cmd_sample_range,
             cmd_sample_zero=cfg.cmd_sample_zero,
             allowed_task_mixing=cfg.allowed_task_mixing,
             use_rew_for_individual_tasks=cfg.use_indv_task_rew,
             hull_x_range=cfg.hull_x_range,
+            task_scheme=cfg.task_scheme,
         )
     )
     return env
 
 
 def main(cfg: FinetuneConfig):
-    pretrained = cfg.pretrained_ckpt
+    assert cfg.load_pretrained_from, "cfg.load_pretrained_from is not set — point it at a pretrained-critic zip."
+    pretrained = MODELS_DIR / cfg.load_pretrained_from
     assert pretrained.exists(), f"pretrained critic zip not found: {pretrained}"
 
     experiment_name = cfg.experiment_name

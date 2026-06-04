@@ -1,0 +1,47 @@
+# Gait-scheme template for scripts/eval/task_switching_eval.py — copy and edit:
+#     python scripts/eval/task_switching_eval.py switching_gait_template
+
+eval_name: switching_gait
+task_scheme: gait        # gait bits (two_leg, one_leg, unused); the default
+
+# --- episode / switch ---
+ep_time: 10              # seconds per episode -> the survival window (N = ep_time * 50 frames)
+switch_fraction: 0.3333  # fraction of the episode held by task A before switching to B (N/3)
+episodes_per_pair: 2000  # episodes per (model, ordered pair A->B)
+episode_chunk: 100       # episodes per pool job (load balancing)
+seed_base: 42            # episode i uses the same seed across models (fair comparison)
+
+# --- switch endpoints (gait units) ---
+# Same gait-unit schema as single_task_eval's `tasks`: {name, label, gait, cmd_vel_range,
+# cmd_tilt_range}. The script runs EVERY ordered distinct pair (A->B, A != B) automatically.
+# This is the task-switching experiment's core eval: the 5 directional gait single tasks.
+switch_tasks:
+  - { name: walk_forward,  label: "walk forward",  gait: [1, 0], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [0.0, 0.0] }
+  - { name: walk_backward, label: "walk backward", gait: [1, 0], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [0.0, 0.0] }
+  - { name: hop_forward,   label: "hop forward",   gait: [0, 1], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [0.0, 0.0] }
+  - { name: hop_backward,  label: "hop backward",  gait: [0, 1], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [0.0, 0.0] }
+  - { name: tilt,          label: "tilt",          gait: [1, 0], cmd_vel_range: [0.0, 0.0],  cmd_tilt_range: [-0.75, 0.75] }
+
+# Optional blacklist: ordered [from, to] name pairs to DROP. null/omitted/[] => all pairs.
+exclude_pairs: null
+
+# --- run controls ---
+only_models: null
+date_suffix: false
+
+# --- models to evaluate ---
+models:
+  - name: ppo_bc_gait/switching/2.0.0
+    kind: sb3
+    ref: ppo_bc_gait/switching/2.0.0/final.zip
+    desc: "PPO+BC gait switching (our method); bc_coef 0.1"
+
+  - name: rudin/finetuned/2.0.0
+    kind: sb3
+    ref: rudin/finetuned/2.0.0/final.zip
+    desc: "Rudin RLFT gait switching (pure RL)"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle (gait routing) — topline reference baseline"

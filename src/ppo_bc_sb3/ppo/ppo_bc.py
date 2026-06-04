@@ -39,6 +39,7 @@ from torch.nn import functional as F
 from ppo_bc_sb3.common.buffers import RolloutBuffer
 from ppo_bc_sb3.common.on_policy_algorithm import ExpertFn, OnPolicyAlgorithm
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
+from mdp.bipedal_walker.tasks import GAIT
 
 SelfPPO_BC = TypeVar("SelfPPO_BC", bound="PPO_BC")
 
@@ -74,6 +75,7 @@ class PPO_BC(OnPolicyAlgorithm):
         experts: dict[str, ExpertFn],
         task_bits: int,
         act_var_floor: float = 0.0,
+        task_scheme: str = GAIT,
         learning_rate: float | Schedule = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 64,
@@ -114,6 +116,7 @@ class PPO_BC(OnPolicyAlgorithm):
             experts=experts,
             task_bits=task_bits,
             act_var_floor=act_var_floor,
+            task_scheme=task_scheme,
             learning_rate=learning_rate,
             n_steps=n_steps,
             gamma=gamma,
@@ -206,9 +209,11 @@ class PPO_BC(OnPolicyAlgorithm):
         custom_objects: dict[str, Any] | None = None,
         print_system_info: bool = False,
         force_reset: bool = True,
+        task_scheme: str = GAIT,
         **kwargs,
     ) -> SelfPPO_BC:
-        """Inject experts + task_bits (not pickled) and defer to SB3's loader.
+        """Inject experts + task_bits + task_scheme (not pickled) and defer to SB3's
+        loader.
 
         BaseAlgorithm.load builds the model with ``cls(policy=..., env=..., device=..., _init_setup_model=False)``
         and ``PPO_BC.__init__`` requires experts/task_bits. We patch __init__
@@ -219,6 +224,7 @@ class PPO_BC(OnPolicyAlgorithm):
         def patched_init(self, *a, **kw):
             kw.setdefault("experts", experts)
             kw.setdefault("task_bits", task_bits)
+            kw.setdefault("task_scheme", task_scheme)
             orig_init(self, *a, **kw)
 
         cls.__init__ = patched_init  # type: ignore[method-assign]
@@ -240,6 +246,7 @@ class PPO_BC(OnPolicyAlgorithm):
         # but be defensive).
         model.experts = experts
         model.task_bits = task_bits
+        model.task_scheme = task_scheme
         return model
 
     # ---- loss + optimization helpers ---------------------------------------

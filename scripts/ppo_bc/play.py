@@ -10,26 +10,23 @@ from utils.paths import MODELS_DIR
 from wrappers.plot_env import Plotter
 from wrappers.plot_reward_env import RewardPlotter
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
+from mdp.bipedal_walker.tasks import GAIT, ONEHOT, SINGLE_TASKS_GAIT
 
 
 # =========================================
 
-# EXPERIMENT_NAME = "ppo_bc/1.0.0-18_57_32-2026_05_24"
-# EXPERIMENT_NAME = "ppo_bc/1.0.1-17_30_08-2026_05_25"
-# EXPERIMENT_NAME = "ppo_bc/1.0.2-23_53_29-2026_05_25"
-# EXPERIMENT_NAME = "ppo_bc/1.0.3-11_13_43-2026_05_26"
-# EXPERIMENT_NAME = "ppo_bc/1.1.0-16_07_40-2026_05_26"
-# EXPERIMENT_NAME = "ppo_bc/1.2.0-21_04_31-2026_05_26"
-# EXPERIMENT_NAME = "ppo_bc/critic_pretrain/1.0.2.1-15_24_49-2026_05_27"
-# EXPERIMENT_NAME = "ppo_bc/1.2.1-01_01_25-2026_05_27"
-EXPERIMENT_NAME = "ppo_bc_adv/pretrain/1.0.1"
-MODEL_CHECKPOINT = "rl_model_2799664_steps"
+EXPERIMENT_NAME = "ppo_bc_adv/pretrain/3.0.0"
+MODEL_CHECKPOINT = "final"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)
 PLOT_MODE: str | None = None
 
 MANUAL_CTRL = True
+
+# obs-bit scheme: GAIT (default, 2.x.x) or ONEHOT (legacy 1.x.x). Drives the
+# RlFTEnv task_scheme, allowed_task_mixing, and the keyboard task menu.
+TASK_SCHEME = GAIT
 
 # --- env params (mirrors scripts/ppo_bc/train.py defaults) ---
 EP_TIME              = 10
@@ -38,16 +35,26 @@ TASK_SWITCHING_TIME  = 6.0
 CMD_INTERP_SPEED     = (5.0, 1.0)
 CMD_SAMPLE_RANGE     = ((-5.0, 5.0), (-0.75, 0.75))
 CMD_SAMPLE_ZERO      = (0.2, 0.15)
-ALLOWED_TASK_MIXING  = [
+# Gait: the canonical GaitTask single tasks (gait + command ranges). Onehot:
+# legacy per-task one-hot rows. ALLOWED_TASK_MIXING is what the env samples from
+# (manual mode pins the task instead, but the env still needs a valid set).
+ALLOWED_TASK_MIXING_ONEHOT = [
     (1, 0, 0),  # walk
     (0, 1, 0),  # flamingo
     (0, 0, 1),  # tilt
 ]
+ALLOWED_TASK_MIXING = (
+    list(SINGLE_TASKS_GAIT) if TASK_SCHEME == GAIT else ALLOWED_TASK_MIXING_ONEHOT
+)
+# default 3-bit task vector + commands the keyboard menu / reset start from.
+DEFAULT_TASK_VEC: tuple[int, int, int] = (1, 0, 0)  # two-leg walk / onehot walk
 HULL_X_RANGE         = (20.0, 60.0)
 
 FPS = 50
 VEL_KEY_SPEED  = 5.0    # m/s per second; rate of vel target accumulation
 TILT_KEY_SPEED = 1.0    # rad/s; rate of tilt target accumulation
+DEFAULT_VEL    = 3.0    # m/s default vel a gait task key dials in (walk/hop fwd)
+DEFAULT_TILT   = 0.5    # rad default tilt a tilt task key dials in
 
 # =========================================
 
@@ -60,24 +67,30 @@ _up_held = False
 _down_held = False
 _zero_cmds = False
 _task_set: tuple[int, int, int] | None = None  # None = no change
+# default (vel, tilt) a task key dials in alongside the bits (gait menu); None =
+# leave the current command targets untouched (onehot menu / no task key).
+_cmd_set: tuple[float, float] | None = None
 
 
 def main():
     global _sim_paused, _sim_step, _sim_res
-    global _left_held, _right_held, _up_held, _down_held, _zero_cmds, _task_set
+    global _left_held, _right_held, _up_held, _down_held, _zero_cmds, _task_set, _cmd_set
 
     # start key listeners
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()  # start to listen on a separate thread
 
-    print(f'=== Starting experiment "{EXPERIMENT_NAME}" ===')
+    print(f'=== Starting experiment "{EXPERIMENT_NAME}" ({TASK_SCHEME} scheme) ===')
     if MANUAL_CTRL:
         print("Controls:")
         print("  r           reset")
         print("  space       pause / resume")
         print("  s           step (while paused)")
         print("  q           quit")
-        print("  1-5         toggle tasks")
+        if TASK_SCHEME == GAIT:
+            print("  1-7         task: walk fwd/back, hop fwd/back/in-place, tilt, walk+tilt")
+        else:
+            print("  1-4         task: walk / flamingo / tilt / walk+tilt")
         print("  left/right  velocity -/+")
         print("  up/down     tilt +/-")
         print("  0           zero cmds")
@@ -97,6 +110,7 @@ def main():
         allowed_task_mixing=ALLOWED_TASK_MIXING,
         hull_x_range=HULL_X_RANGE,
         manual_ctrl_mode=MANUAL_CTRL,
+        task_scheme=TASK_SCHEME,
     )
     wrap_env = rlft_env
     if PLOT_MODE == "obs":
@@ -115,7 +129,7 @@ def main():
 
     cmd_vel_target = 0.0
     cmd_tilt_target = 0.0
-    task_vec: tuple[int, int, int] = ALLOWED_TASK_MIXING[0]  # default walk
+    task_vec: tuple[int, int, int] = DEFAULT_TASK_VEC  # default walk
     total_rewards = 0
 
     def do_reset():
@@ -168,6 +182,10 @@ def main():
                 cmd_vel_target = 0.0
                 cmd_tilt_target = 0.0
                 _zero_cmds = False
+            # a task key may dial in default commands (gait menu); +/- keys still adjust.
+            if _cmd_set is not None:
+                cmd_vel_target, cmd_tilt_target = _cmd_set
+                _cmd_set = None
             rlft_env._cmd_vec_target = (cmd_vel_target, cmd_tilt_target)
 
             if _task_set is not None:
@@ -203,9 +221,48 @@ def main():
             _sim_res = True
 
 
+def _handle_task_key(k: str) -> bool:
+    """Map a task-menu key to (bits, default cmd) for the active scheme. Returns
+    True if the key was a task key. Gait keys also dial in a sensible default
+    command (vel/tilt) so the gait distinction is visible; +/- keys still adjust."""
+    global _task_set, _cmd_set
+    if TASK_SCHEME == GAIT:
+        gait_menu = {
+            "1": ((1, 0, 0), (DEFAULT_VEL, 0.0), "walk forward"),
+            "2": ((1, 0, 0), (-DEFAULT_VEL, 0.0), "walk backward"),
+            "3": ((0, 1, 0), (DEFAULT_VEL, 0.0), "hop forward"),
+            "4": ((0, 1, 0), (-DEFAULT_VEL, 0.0), "hop backward"),
+            "5": ((0, 1, 0), (0.0, 0.0), "hop in place"),
+            "6": ((1, 0, 0), (0.0, DEFAULT_TILT), "tilt"),
+            "7": ((1, 0, 0), (DEFAULT_VEL, DEFAULT_TILT), "walk + tilt"),
+        }
+        if k in gait_menu:
+            bits, cmd, label = gait_menu[k]
+            _task_set = bits
+            _cmd_set = cmd
+            print(f"Task: {label}")
+            return True
+        return False
+
+    # onehot menu (legacy)
+    onehot_menu = {
+        "1": ((1, 0, 0), "walk"),
+        "2": ((0, 1, 0), "flamingo"),
+        "3": ((0, 0, 1), "tilt"),
+        "4": ((1, 0, 1), "walk + tilt"),
+        # "5": ((0, 1, 1), "flamingo + tilt"),
+    }
+    if k in onehot_menu:
+        bits, label = onehot_menu[k]
+        _task_set = bits
+        print(f"Task: {label}")
+        return True
+    return False
+
+
 def on_press(key: Key | KeyCode | None) -> None:
     global _sim_paused, _sim_step, _sim_res
-    global _left_held, _right_held, _up_held, _down_held, _zero_cmds, _task_set
+    global _left_held, _right_held, _up_held, _down_held, _zero_cmds, _task_set, _cmd_set
 
     if isinstance(key, KeyCode):
         k = key.char
@@ -231,24 +288,11 @@ def on_press(key: Key | KeyCode | None) -> None:
         _down_held = True
     elif k == "0":
         _zero_cmds = True
-    elif k == "1":
-        _task_set = (1, 0, 0)
-        print("Task: walk")
-    elif k == "2":
-        _task_set = (0, 1, 0)
-        print("Task: flamingo")
-    elif k == "3":
-        _task_set = (0, 0, 1)
-        print("Task: tilt")
-    elif k == "4":
-        _task_set = (1, 1, 0)
-        print("Task: walk + flamingo")
-    elif k == "5":
-        _task_set = (1, 0, 1)
-        print("Task: walk + tilt")
     elif k == "q":
         print("Exiting...")
         os._exit(0)
+    elif k is not None:
+        _handle_task_key(k)
 
 
 def on_release(key: Key | KeyCode | None) -> None:

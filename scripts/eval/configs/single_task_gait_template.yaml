@@ -1,0 +1,51 @@
+# Gait-scheme template for scripts/eval/single_task_eval.py — copy and edit:
+#     python scripts/eval/single_task_eval.py single_task_gait_template
+#     python scripts/eval/single_task_eval.py path/to/x.yaml
+
+eval_name: single_task_gait
+task_scheme: gait        # gait bits (two_leg, one_leg, unused); the default
+
+# --- episode / sampling ---
+ep_time: 10              # seconds per episode -> the survival window (N = ep_time * 50 frames)
+modulate_period: 3       # re-sample the held task's command every N seconds
+episodes_per_task: 5000  # episodes per (model, task)
+episode_chunk: 100       # episodes per pool job (load balancing)
+seed_base: 42            # episode i uses the same seed across models (fair comparison)
+
+# --- tasks (gait units) ---
+# Each task is defined by its gait + command ranges (no masking — the ranges already
+# zero whatever is irrelevant):
+#   gait: [two_leg, one_leg]   (1,0)=two-leg walk/tilt, (0,1)=one-leg hop
+#   cmd_vel_range / cmd_tilt_range : uniform sampling bounds; [0,0] pins to 0
+#   label : shown on screen / in reports (defaults to name)
+# walk vs tilt share the two-leg gait and are distinguished purely by which command
+# is nonzero; hop @ 0 (cmd_vel_range [0,0]) is "hop in place" (flamingo).
+tasks:
+  - { name: walk_forward,  label: "walk forward",  gait: [1, 0], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [0.0, 0.0] }
+  - { name: walk_backward, label: "walk backward", gait: [1, 0], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [0.0, 0.0] }
+  - { name: hop_forward,   label: "hop forward",   gait: [0, 1], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [0.0, 0.0] }
+  - { name: hop_backward,  label: "hop backward",  gait: [0, 1], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [0.0, 0.0] }
+  - { name: tilt,          label: "tilt",          gait: [1, 0], cmd_vel_range: [0.0, 0.0],  cmd_tilt_range: [-0.75, 0.75] }
+
+# --- run controls ---
+only_models: null        # list of model names to run (subset), or null for all
+date_suffix: true        # append a timestamp to the output dir name (set false to overwrite)
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle, gait routing).
+# ref:  checkpoint path relative to models/ (hybrid: null).
+models:
+  - name: ppo_bc_gait/switching/2.0.0
+    kind: sb3
+    ref: ppo_bc_gait/switching/2.0.0/final.zip
+    desc: "PPO+BC gait switching (our method); bc_coef 0.1"
+
+  - name: rudin/distill/2.0.0
+    kind: torch
+    ref: rudin/distill/2.0.0/final.pt
+    desc: "DAgger distilled gait student (Rudin); MSE loss"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle (gait routing) — topline reference baseline"

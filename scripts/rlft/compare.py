@@ -28,17 +28,17 @@ from pynput.keyboard import Key, KeyCode
 from stable_baselines3 import PPO
 from utils.paths import MODELS_DIR
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
+from mdp.bipedal_walker.tasks import GAIT, ONEHOT
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # =========================================
 
 # (experiment_name, label). experiment_name is a models/-relative dir, e.g.
-# rudin/finetuned/1.0.0 or rudin_adv/finetuned/1.0.0 (see
-# utils.paths.rudin_finetuned_experiment).
+# rudin/finetuned/1.0.0 or rudin_adv/finetuned/1.0.0.
 EXPERIMENTS = [
-    ("rudin/finetuned/1.0.0", "rudin 1.0.0"),
-    ("rudin_adv/finetuned/1.0.0", "rudin_adv 1.0.0"),
+    # ("rudin/finetuned/1.0.0", "rudin 1.0.0"),
+    # ("rudin_adv/finetuned/1.0.0", "rudin_adv 1.0.0"),
 ]
 
 MODEL_CHECKPOINT = "best/best_model"
@@ -46,6 +46,10 @@ MODEL_CHECKPOINT = "best/best_model"
 ENV_W, ENV_H = 600, 400
 MAX_COLS = 2
 FPS = 50
+
+# obs-bit scheme: GAIT (default, 2.x.x) or ONEHOT (legacy 1.x.x). Picks the keyboard
+# task menu + how the 3 obs bits are interpreted by the loaded models.
+TASK_SCHEME = GAIT
 
 # --- env params (mirror finetune_config.py) ---
 EP_TIME              = 10
@@ -55,6 +59,28 @@ HULL_X_RANGE         = (20.0, 60.0)
 
 VEL_KEY_SPEED  = 5.0    # m/s per second
 TILT_KEY_SPEED = 1.0    # rad/s
+DEFAULT_VEL    = 3.0    # m/s default vel a gait task key dials in
+DEFAULT_TILT   = 0.5    # rad default tilt a tilt task key dials in
+
+# Keyboard task menus: key -> (label, 3-bit task vector, vel, tilt). vel/tilt are
+# auto-dialed targets (None leaves the arrow-key target untouched).
+GAIT_TASK_MENU: dict[str, tuple] = {
+    "1": ("walk forward",  (1, 0, 0),  DEFAULT_VEL, 0.0),
+    "2": ("walk backward", (1, 0, 0), -DEFAULT_VEL, 0.0),
+    "3": ("hop forward",   (0, 1, 0),  DEFAULT_VEL, 0.0),
+    "4": ("hop backward",  (0, 1, 0), -DEFAULT_VEL, 0.0),
+    "5": ("tilt",          (1, 0, 0),  0.0,         DEFAULT_TILT),
+    "6": ("walk + tilt",   (1, 0, 0),  DEFAULT_VEL, DEFAULT_TILT),
+}
+ONEHOT_TASK_MENU: dict[str, tuple] = {
+    "1": ("walk",            (1, 0, 0), None, None),
+    "2": ("flamingo",        (0, 1, 0), None, None),
+    "3": ("tilt",            (0, 0, 1), None, None),
+    "4": ("walk + flamingo", (1, 1, 0), None, None),
+    "5": ("walk + tilt",     (1, 0, 1), None, None),
+}
+TASK_MENU = GAIT_TASK_MENU if TASK_SCHEME == GAIT else ONEHOT_TASK_MENU
+DEFAULT_TASK_VEC: tuple[int, int, int] = (1, 0, 0)
 
 # =========================================
 
@@ -66,7 +92,8 @@ _right_held = False
 _up_held = False
 _down_held = False
 _zero_cmds = False
-_task_set: tuple[int, int, int] | None = None  # None = no change
+# pending menu selection: (task_bits, vel|None, tilt|None) or None for no change.
+_task_set: tuple[tuple[int, int, int], float | None, float | None] | None = None
 
 
 def main():
@@ -90,6 +117,7 @@ def main():
             cmd_sample_range=CMD_SAMPLE_RANGE,
             hull_x_range=HULL_X_RANGE,
             manual_ctrl_mode=True,
+            task_scheme=TASK_SCHEME,
         )
         envs.append(env)
 
@@ -175,10 +203,16 @@ def main():
             env._cmd_vec_target = (cmd_vel_target, cmd_tilt_target)
 
         if _task_set is not None:
-            task_vec = _task_set
+            task_vec, _set_vel, _set_tilt = _task_set
             _task_set = None
             for env in envs:
                 env._task_id_vec = task_vec
+            # auto-dial the task's preset commands (gait menu); None leaves the
+            # arrow-key-driven target untouched (onehot menu).
+            if _set_vel is not None:
+                cmd_vel_target = _set_vel
+            if _set_tilt is not None:
+                cmd_tilt_target = _set_tilt
 
         if _sim_res:
             reset_all()
@@ -233,21 +267,10 @@ def on_press(key: Key | KeyCode | None) -> None:
         _down_held = True
     elif k == "0":
         _zero_cmds = True
-    elif k == "1":
-        _task_set = (1, 0, 0)
-        print("Task: walk")
-    elif k == "2":
-        _task_set = (0, 1, 0)
-        print("Task: flamingo")
-    elif k == "3":
-        _task_set = (0, 0, 1)
-        print("Task: tilt")
-    elif k == "4":
-        _task_set = (1, 1, 0)
-        print("Task: walk + flamingo")
-    elif k == "5":
-        _task_set = (1, 0, 1)
-        print("Task: walk + tilt")
+    elif k in TASK_MENU:
+        label, bits, vel, tilt = TASK_MENU[k]
+        _task_set = (bits, vel, tilt)
+        print(f"Task: {label}")
     elif k == "q":
         print("Exiting...")
         os._exit(0)

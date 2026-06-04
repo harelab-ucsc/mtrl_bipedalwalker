@@ -4,7 +4,9 @@
 #     python scripts/eval/singletask_eval.py path/to/x.yaml
 
 
-eval_name: pertask-timealive-taskquality
+eval_name: singletask_eval_1
+task_scheme: onehot  # legacy one-hot (walk, flamingo, tilt) eval; gait is the default
+date_suffix: false
 ep_time: 10            # seconds per episode -> the survival window
 modulate_period: 3     # re-sample the task command every N seconds
 episodes_per_task: 5000
@@ -26,32 +28,52 @@ only_models: null
 models:
   - name: ppo_bc/pretrain/1.0.0
     kind: sb3
-    ref: ppo_bc/pretrain/1.0.0/rl_model_2799664_steps.zip
+    ref: ppo_bc/pretrain/1.0.0/final.zip
     desc: "PPO+BC pretrained; Unif task sampling; NLL loss; BC_COEF = 0.2"
+  
+  - name: ppo_bc_adv/pretrain/1.0.0
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/1.0.0/final.zip
+    desc: "PPO+BC pretrained; Adv task sampling; NLL loss; BC_COEF = 0.2"
 
   - name: ppo_bc/pretrain/1.0.1
     kind: sb3
-    ref: ppo_bc/pretrain/1.0.1/rl_model_2799664_steps.zip
+    ref: ppo_bc/pretrain/1.0.1/final.zip
     desc: "PPO+BC pretrained; Unif task sampling; MSE loss; BC_COEF = 0.2"
-
-  - name: ppo_bc_adv/pretrain/1.0.0
-    kind: sb3
-    ref: ppo_bc_adv/pretrain/1.0.0/rl_model_2799664_steps.zip
-    desc: "PPO+BC pretrained; Adv task sampling; NLL loss; BC_COEF = 0.2"
 
   - name: ppo_bc_adv/pretrain/1.0.1
     kind: sb3
-    ref: ppo_bc_adv/pretrain/1.0.1/rl_model_2799664_steps.zip
+    ref: ppo_bc_adv/pretrain/1.0.1/final.zip
     desc: "PPO+BC pretrained; Adv task sampling; MSE loss; BC_COEF = 0.2"
+
+  - name: ppo_bc/pretrain/1.0.2
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.2/final.zip
+    desc: "PPO+BC pretrained; Unif task sampling; MSE loss; BC_COEF = 0.2; limited DAgger; 2x train time"
+
+  - name: ppo_bc_adv/pretrain/1.0.2
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/1.0.2/final.zip
+    desc: "PPO+BC pretrained; Adv task sampling; MSE loss; BC_COEF = 0.2; limited DAgger; 2x train time"
+
+  - name: ppo_bc/pretrain/1.0.3
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.3/final.zip
+    desc: "PPO+BC pretrained; Unif task sampling; NLL loss; BC_COEF = 0.7"
+
+  - name: ppo_bc_adv/pretrain/1.0.3
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/1.0.3/final.zip
+    desc: "PPO+BC pretrained; Adv task sampling; NLL loss; BC_COEF = 0.7"
 
   - name: rudin/distill/1.0.0
     kind: torch
-    ref: rudin/distill/1.0.0/distill_79.pt
+    ref: rudin/distill/1.0.0/final.pt
     desc: "DAgger distilled; Unif task sampling; MSE loss"
 
   - name: rudin_adv/distill/1.0.0
     kind: torch
-    ref: rudin_adv/distill/1.0.0/distill_79.pt
+    ref: rudin_adv/distill/1.0.0/final.pt
     desc: "DAgger distilled; Adv task sampling; MSE loss"
 
   - name: hybrid

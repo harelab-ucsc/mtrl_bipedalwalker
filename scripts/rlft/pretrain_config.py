@@ -12,10 +12,10 @@ field). The dataclass is picklable so it can be bound into the SubprocVecEnv
 factory and shipped to worker processes.
 
 This is a *pure-RL* baseline: no behavior cloning, no experts, no adversarial
-task sampling. The actor is a frozen distilled student (loaded from
-``rudin[_adv]/distill/<distill_version>/best.pt``); only the value network
-trains. ``adversarial`` selects the distilled-student *source* (and the output
-``rudin_adv`` vs ``rudin`` dir) — task sampling is uniform in both cases.
+task sampling. The actor is a frozen distilled student (``load_student_from``, a
+bare path under ``MODELS_DIR`` to the student ``.pt``); only the value network
+trains. Output goes to ``experiment_name`` under ``MODELS_DIR`` — both are plain
+path strings (mirrors scripts/ppo_bc/pretrain_critic_config.py).
 """
 
 from __future__ import annotations
@@ -27,13 +27,20 @@ import numpy as np
 import torch
 
 from mdp.bipedal_walker.student import HIDDEN_BC
-from mdp.bipedal_walker.tasks import SINGLE_TASKS, TaskSpec
-from utils.paths import rudin_distill_ckpt, rudin_pretrained_critic_experiment
+from mdp.bipedal_walker.tasks import (
+    GAIT,
+    ONEHOT,
+    SINGLE_TASKS,
+    SINGLE_TASKS_GAIT,
+    COMBINATION_TASKS_GAIT,
+    GaitTask,
+    TaskSpec,
+)
 
-# Common task-mixing recipes (raw 3-bit (walk, flamingo, tilt) rows / TaskSpecs).
+# Legacy onehot combination recipe (raw 3-bit (walk, flamingo, tilt) rows).
 COMBINATION_TASKS: tuple[tuple[int, int, int], ...] = (
-    (1, 1, 0),  # walk + flamingo
     (1, 0, 1),  # walk + tilt
+    # (0, 1, 1),  # flamingo + tilt
 )
 
 
@@ -41,14 +48,13 @@ COMBINATION_TASKS: tuple[tuple[int, int, int], ...] = (
 class PretrainConfig:
     """All hyperparameters for one critic-pretraining run. Field defaults are the base config."""
 
-    # --- identity / source / output ---
-    # adversarial picks the distilled-student source AND the output base dir
-    # (rudin_adv vs rudin). distill_version locates the student .pt; version is
-    # the output semver under <base>/pretrained_critic/<version>.
-    adversarial: bool = False
-    distill_version: str = "1.0.0"
-    version: str = "1.0.0"
+    # --- identity / source / output (plain paths under MODELS_DIR) ---
+    experiment_name: str = ""  # output dir, e.g. "rudin/pretrained_critic/1.0.0"
+    load_student_from: str = ""  # distilled student .pt, e.g. "rudin/distill/1.0.0/best.pt"
     timesteps: int = 200 * 1024 * 14
+
+    # obs-bit scheme: must match the distilled student + the finetune stage.
+    task_scheme: str = GAIT
 
     # --- environment ---
     n_train_envs: int = 14
@@ -56,7 +62,7 @@ class PretrainConfig:
     # (vel, tilt) secs between cmd resamples; > ep_time disables that cmd switching.
     cmd_switching_time: tuple[float, float] = (3.0, 4.0)
     # secs between task resamples; > ep_time disables in-episode task switching.
-    task_switching_time: float = 6.0
+    task_switching_time: float = 11.0
     cmd_interp_speed: tuple[float, float] = (5.0, 1.0)  # (x_vel, tilt)
     cmd_sample_range: tuple[tuple[float, float], tuple[float, float]] = (
         (-5.0, 5.0),
@@ -64,9 +70,10 @@ class PretrainConfig:
     )  # (x_vel, tilt)
     cmd_sample_zero: tuple[float, float] = (0.2, 0.15)
     # Which tasks the critic is pretrained to see, and how often (via switching
-    # time). SINGLE_TASKS = the 4 directional single tasks (task switching);
-    # raw 3-tuples like (1,0,1) add combinations. Mix both for a combined run.
-    allowed_task_mixing: Sequence[tuple[int, int, int] | TaskSpec] = SINGLE_TASKS
+    # time) — match this to the finetune stage. Default is the gait combination set.
+    allowed_task_mixing: Sequence[
+        tuple[int, int, int] | TaskSpec | GaitTask
+    ] = COMBINATION_TASKS_GAIT
     # Poll the full modular RLFT reward for individual tasks too (combos always
     # get it). True so the critic sees task-conditioned returns for every task.
     use_indv_task_rew: bool = True
@@ -90,39 +97,58 @@ class PretrainConfig:
     max_grad_norm: float = 0.5
     # Tight policy std so the frozen actor stays near the student's mode while
     # the critic learns the return landscape under that policy.
-    init_log_std: float = float(np.log(0.1))
+    init_log_std: float = float(np.log(0.5))
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
 
-    @property
-    def experiment_name(self) -> str:
-        return rudin_pretrained_critic_experiment(self.adversarial, self.version)
 
-    @property
-    def student_ckpt(self):
-        return rudin_distill_ckpt(self.adversarial, self.distill_version)
+# --- gait (2.x.x) ---------------------------------------------------------------
+# Re-fit the critic on the same gait reward + task distribution as the finetune
+# stage. Load the gait distilled student (rudin/distill/2.0.0). Switching uses the
+# 5 single tasks with fast switching; combination uses walk+tilt.
+SWITCHING_GAIT = PretrainConfig(
+    experiment_name="rudin/pretrained_critic/2.0.0",
+    task_scheme=GAIT,
+    load_student_from="rudin/distill/2.0.0/final.pt",
+    allowed_task_mixing=SINGLE_TASKS_GAIT,
+    task_switching_time=2.0,
+)
+COMBINATION_GAIT = PretrainConfig(
+    experiment_name="rudin/pretrained_critic_comb/2.0.0",
+    task_scheme=GAIT,
+    load_student_from="rudin/distill/2.0.0/final.pt",
+    allowed_task_mixing=COMBINATION_TASKS_GAIT,
+)
 
-
+# --- legacy onehot (1.x.x) ------------------------------------------------------
 # Task switching only: pretrain the critic across the 4 directional single tasks.
 SWITCHING = PretrainConfig(
-    version="1.0.0",
+    experiment_name="rudin/pretrained_critic/1.0.0",
+    task_scheme=ONEHOT,
+    load_student_from="rudin/distill/1.0.0/final.pt",
     allowed_task_mixing=SINGLE_TASKS,
 )
 
-# Task combination only: walk+flamingo / walk+tilt (no single-task rows).
+# Task combination only: walk+tilt / flamingo+tilt (no single-task rows).
 COMBINATION = PretrainConfig(
-    version="1.0.0",
+    experiment_name="rudin/pretrained_critic/1.0.0",
+    task_scheme=ONEHOT,
+    load_student_from="rudin/distill/1.0.0/final.pt",
     allowed_task_mixing=COMBINATION_TASKS,
 )
 
 # A mix of single + combination tasks.
 MIX = PretrainConfig(
-    version="1.0.0",
+    experiment_name="rudin/pretrained_critic/1.0.0",
+    task_scheme=ONEHOT,
+    load_student_from="rudin/distill/1.0.0/final.pt",
     allowed_task_mixing=(*SINGLE_TASKS, *COMBINATION_TASKS),
 )
 
 
 # Registry consumed by pretrain_critic.py's --preset flag.
 PRESETS: dict[str, PretrainConfig] = {
+    "switching_gait": SWITCHING_GAIT,
+    "combination_gait": COMBINATION_GAIT,
     "switching": SWITCHING,
     "combination": COMBINATION,
     "mix": MIX,

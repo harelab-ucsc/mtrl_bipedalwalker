@@ -1,0 +1,66 @@
+# Template config for scripts/eval/task_switching_eval.py — copy and edit for a new run:
+#     cp configs/switching_template.yaml configs/myexp.yaml
+#     python scripts/eval/task_switching_eval.py myexp           # by name
+#     python scripts/eval/task_switching_eval.py path/to/x.yaml
+
+eval_name: switching_default  # names the output dir
+task_scheme: onehot  # legacy one-hot (walk, flamingo, tilt) eval; gait is the default
+
+# --- episode / switch ---
+ep_time: 10              # seconds per episode -> the survival window (N = ep_time * 50 frames)
+switch_fraction: 0.3333  # fraction of the episode held by task A before switching to B (N/3)
+episodes_per_pair: 2000  # episodes per (model, ordered pair A->B)
+episode_chunk: 100       # episodes per pool job (load balancing)
+seed_base: 42            # episode i uses the same seed across models (fair comparison)
+
+# --- command sampling ranges ---
+cmd_vel_forward_range: [0.0, 5.0]    # walk_forward velocity (m/s)
+cmd_vel_backward_range: [-5.0, 0.0]  # walk_backward velocity (m/s)
+cmd_tilt_range: [-0.75, 0.75]        # tilt hull-angle command (rad)
+
+# --- switch endpoints (modular) ---
+# Each entry is a "task unit": {name, bits (walk, flamingo, tilt), walk_dir}, the SAME
+# schema as task_combinations in the combination eval. A single task is a one-bit entry;
+# a combination has several bits set. walk_dir is required when the walk bit is set
+# ('forward' | 'backward'), and ignored (use null) otherwise.
+#
+# The script automatically runs EVERY ordered distinct pair (A->B, A != B) of switch_tasks
+# — you only ever maintain this one list. Adding a task is automatically thorough.
+#   - individual-task switching : list only the single tasks.
+#   - combination switching      : include combination units (e.g. walk_fwd+tilt).
+switch_tasks:
+  - { name: walk_forward,  bits: [1, 0, 0], walk_dir: forward }
+  - { name: walk_backward, bits: [1, 0, 0], walk_dir: backward }
+  - { name: flamingo,      bits: [0, 1, 0], walk_dir: null }
+  - { name: tilt,          bits: [0, 0, 1], walk_dir: null }
+  - { name: walk_fwd+tilt, bits: [1, 0, 1], walk_dir: forward }
+  - { name: walk_bwd+tilt, bits: [1, 0, 1], walk_dir: backward }
+
+# Optional blacklist: ordered [from, to] name pairs to DROP from the full cross-product.
+# null / omitted / [] => run every ordered pair. Names must exist in switch_tasks.
+exclude_pairs: null
+
+# --- run controls ---
+only_models: null        # list of model names to run (subset), or null for all
+date_suffix: false       # append a timestamp to the output dir name (set false to overwrite)
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle).
+# ref:  checkpoint path relative to models/ (hybrid: null). HARD-CODED on purpose —
+#       point it at the exact checkpoint you want (e.g. the final, not best/best_model.zip).
+# desc: shown in models.md / meta.json (the chart legend uses `name`).
+models:
+  - name: ppo_bc/pretrain/1.0.0
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.0/final.zip
+    desc: "PPO+BC pretrained; Unif task sampling; NLL loss; BC_COEF = 0.2"
+
+  - name: rudin/distill/1.0.0
+    kind: torch
+    ref: rudin/distill/1.0.0/final.pt
+    desc: "DAgger distilled; Unif task sampling; MSE loss"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle (topline reference baseline)"

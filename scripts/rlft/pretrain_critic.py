@@ -60,6 +60,7 @@ def make_env(cfg: PretrainConfig):
             allowed_task_mixing=cfg.allowed_task_mixing,
             use_rew_for_individual_tasks=cfg.use_indv_task_rew,
             hull_x_range=cfg.hull_x_range,
+            task_scheme=cfg.task_scheme,
         )
     )
     return env
@@ -106,7 +107,8 @@ def load_student_actor(model: PPO, student_path) -> None:
 
 
 def main(cfg: PretrainConfig):
-    student_path = cfg.student_ckpt
+    assert cfg.load_student_from, "cfg.load_student_from is not set — point it at a distilled student .pt."
+    student_path = MODELS_DIR / cfg.load_student_from
     assert student_path.exists(), f"distilled student not found: {student_path}"
 
     experiment_name = cfg.experiment_name
@@ -217,7 +219,7 @@ def print_run_info(cfg, env, model, experiment_name, student_path):
     print(f"\n{'=' * 44}")
     print(f"  critic_pretrain  {experiment_name}")
     print(f"  frozen actor     {student_path}")
-    print(f"  Note: actor is frozen; only the value network trains.")
+    print("  Note: actor is frozen; only the value network trains.")
     print(f"{'=' * 44}")
 
     cmd_vel_sw, cmd_tilt_sw = cfg.cmd_switching_time

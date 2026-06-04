@@ -80,10 +80,9 @@ class RewardPlotter(Wrapper):
 
         self._t = 0
         self._window = window
-        self._initialized = False
         self._plot_shown = False
 
-        # set once the first reward_terms dict arrives
+        # rebuilt whenever the incoming reward_terms key set changes
         self._term_names: list[str] = []
         self._fig: plt.Figure | None = None  # type: ignore[name-defined]
         self._axes_flat: list[plt.Axes] = []  # type: ignore[name-defined]
@@ -109,6 +108,19 @@ class RewardPlotter(Wrapper):
     # ------------------------------------------------------------------
 
     def _init_plots(self, term_names: list[str]) -> None:
+        # rebuildable: close any prior figure and reset all per-figure state so
+        # this can run again when the reward term set changes (e.g. a task switch
+        # toggling enable_task_reward, or flamingo_both_down appearing).
+        if self._fig is not None:
+            plt.close(self._fig)
+        self._axes_flat = []
+        self._lines = []
+        self._term_texts = []
+        self._line_total = None
+        self._total_text = None
+        self._ts = []
+        self._data_total = []
+
         self._term_names = term_names
         n = len(term_names)
         n_total = n + 1  # extra slot for the total-reward subplot
@@ -183,9 +195,12 @@ class RewardPlotter(Wrapper):
         if not terms:
             return
 
-        if not self._initialized:
-            self._init_plots(list(terms.keys()))
-            self._initialized = True
+        # (re)build the figure on first sight and whenever the term set changes —
+        # the term order is deterministic per branch, so this fires only on a real
+        # composition change, not every step.
+        keys = list(terms.keys())
+        if keys != self._term_names:
+            self._init_plots(keys)
             plt.show(block=False)
             plt.pause(0.01)
             self._plot_shown = True

@@ -1,0 +1,66 @@
+# Experiment config for scripts/eval/task_combination_eval.py. Select with:
+#     python scripts/eval/task_combination_eval.py combination_eval_3
+#
+# Final task-combination comparison (walk_fwd+tilt, walk_bwd+tilt): two baselines
+# (rudin / rudin_adv) vs our method (ppo_bc / ppo_bc_adv at MSE 1.2.1 and NLL 1.3.1),
+# all combination-finetuned, plus the hybrid oracle as a topline reference.
+
+eval_name: task_combination_eval_3
+task_scheme: onehot  # legacy one-hot (walk, flamingo, tilt) eval; gait is the default
+date_suffix: false
+
+ep_time: 10
+modulate_period: 3
+episodes_per_combo: 10000
+episode_chunk: 100
+seed_base: 42
+
+cmd_vel_forward_range: [0.0, 5.0]
+cmd_vel_backward_range: [-5.0, 0.0]
+cmd_tilt_range: [-0.75, 0.75]
+
+task_combinations:
+  - name: walk_fwd+tilt
+    bits: [1, 0, 1]
+    walk_dir: forward
+  - name: walk_bwd+tilt
+    bits: [1, 0, 1]
+    walk_dir: backward
+
+only_models: null
+
+models:
+  - name: rudin/combination/1.0.0
+    kind: sb3
+    ref: rudin/combination/1.0.0/final.zip
+    desc: "Baseline (Rudin); combination finetuned; uniform task selection"
+
+  - name: rudin_adv/combination/1.0.0
+    kind: sb3
+    ref: rudin_adv/combination/1.0.0/final.zip
+    desc: "Baseline (Rudin); combination finetuned; adversarial task selection"
+
+  - name: ppo_bc/combination/1.2.1
+    kind: sb3
+    ref: ppo_bc/combination/1.2.1/final.zip
+    desc: "Ours; combination finetuned; MSE BC loss @ 0.2 coef; uniform task selection"
+
+  - name: ppo_bc_adv/combination/1.2.1
+    kind: sb3
+    ref: ppo_bc_adv/combination/1.2.1/final.zip
+    desc: "Ours; combination finetuned; MSE BC loss @ 0.2 coef; adversarial task selection"
+
+  - name: ppo_bc/combination/1.3.1
+    kind: sb3
+    ref: ppo_bc/combination/1.3.1/final.zip
+    desc: "Ours; combination finetuned; NLL BC loss @ 0.7 coef; uniform task selection"
+
+  - name: ppo_bc_adv/combination/1.3.1
+    kind: sb3
+    ref: ppo_bc_adv/combination/1.3.1/final.zip
+    desc: "Ours; combination finetuned; NLL BC loss @ 0.7 coef; adversarial task selection"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Averaged-expert baseline (no true combination expert)"

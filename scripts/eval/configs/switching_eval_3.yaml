@@ -1,0 +1,79 @@
+# Experiment config for scripts/eval/task_switching_eval.py. Select with:
+#     python scripts/eval/task_switching_eval.py switching_eval_3
+#
+# Final task-switching comparison (single + task combination): two baselines (rudin /
+# rudin_adv) vs our method (ppo_bc / ppo_bc_adv at MSE 1.2.1 and NLL 1.3.1), all
+# combination-finetuned, plus the hybrid oracle as a topline reference.
+
+eval_name: switching_eval_3
+task_scheme: onehot  # legacy one-hot (walk, flamingo, tilt) eval; gait is the default
+
+# --- episode / switch ---
+ep_time: 10              # seconds per episode -> the survival window (N = ep_time * 50 frames)
+switch_fraction: 0.3333  # fraction of the episode held by task A before switching to B (N/3)
+episodes_per_pair: 4000  # episodes per (model, ordered pair A->B)
+episode_chunk: 100       # episodes per pool job (load balancing)
+seed_base: 42            # episode i uses the same seed across models (fair comparison)
+
+# --- command sampling ranges ---
+cmd_vel_forward_range: [0.0, 5.0]
+cmd_vel_backward_range: [-5.0, 0.0]
+cmd_tilt_range: [-0.75, 0.75]
+
+# --- switch endpoints: single tasks + the two combinations ---
+# The script runs EVERY ordered distinct pair of these (6 tasks -> 30 pairs). To make it
+# lighter, lower episodes_per_pair or drop transitions via exclude_pairs below. For
+# individual-task-only switching, trim this list to the four single tasks.
+switch_tasks:
+  - { name: walk_forward,  bits: [1, 0, 0], walk_dir: forward }
+  - { name: walk_backward, bits: [1, 0, 0], walk_dir: backward }
+  - { name: flamingo,      bits: [0, 1, 0], walk_dir: null }
+  - { name: tilt,          bits: [0, 0, 1], walk_dir: null }
+  - { name: walk_fwd+tilt, bits: [1, 0, 1], walk_dir: forward }
+  - { name: walk_bwd+tilt, bits: [1, 0, 1], walk_dir: backward }
+
+exclude_pairs: null      # default: run every ordered pair
+
+# --- run controls ---
+only_models: null
+date_suffix: false
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle).
+# ref:  checkpoint path relative to models/ (hybrid: null), pointing at the final ckpt.
+# desc: shown in models.md / meta.json (the chart legend uses `name`).
+models:
+  - name: rudin/combination/1.0.0
+    kind: sb3
+    ref: rudin/combination/1.0.0/final.zip
+    desc: "Baseline (Rudin); combination finetuned; uniform task selection"
+
+  - name: rudin_adv/combination/1.0.0
+    kind: sb3
+    ref: rudin_adv/combination/1.0.0/final.zip
+    desc: "Baseline (Rudin); combination finetuned; adversarial task selection"
+
+  - name: ppo_bc/combination/1.2.1
+    kind: sb3
+    ref: ppo_bc/combination/1.2.1/final.zip
+    desc: "Ours; combination finetuned; MSE BC loss @ 0.2 coef; uniform task selection"
+
+  - name: ppo_bc_adv/combination/1.2.1
+    kind: sb3
+    ref: ppo_bc_adv/combination/1.2.1/final.zip
+    desc: "Ours; combination finetuned; MSE BC loss @ 0.2 coef; adversarial task selection"
+
+  - name: ppo_bc/combination/1.3.1
+    kind: sb3
+    ref: ppo_bc/combination/1.3.1/final.zip
+    desc: "Ours; combination finetuned; NLL BC loss @ 0.7 coef; uniform task selection"
+
+  - name: ppo_bc_adv/combination/1.3.1
+    kind: sb3
+    ref: ppo_bc_adv/combination/1.3.1/final.zip
+    desc: "Ours; combination finetuned; NLL BC loss @ 0.7 coef; adversarial task selection"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle (topline reference baseline)"

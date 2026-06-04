@@ -28,7 +28,7 @@ from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
 
 # new env that drives task + cmd sampling internally (walk / flamingo / tilt mix).
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
-from mdp.bipedal_walker.tasks import SINGLE_TASKS
+from mdp.bipedal_walker.tasks import GAIT
 
 from ppo_bc_sb3 import PPO_BC, PpoBcPolicy, load_expert
 
@@ -50,22 +50,18 @@ if not os.path.exists(DATASET_DIR / "ppo_bc"):
 def build_experts(cfg: TrainConfig):
     """Load expert checkpoints once and return a dict[task_name, callable(obs)->act].
 
-    Keys are directional task names (walk_forward / walk_backward / flamingo / tilt)
-    matching mdp.bipedal_walker.tasks.SINGLE_TASKS. Each callable receives the full
-    RlFTEnv obs (shape [N, n_proprio+2+task_bits]) and returns expert actions [N, 4];
-    it owns its own obs slicing so PPO_BC stays agnostic to the env layout. Walk is
-    now two tasks each with one expert: the algorithm routes by direction, so each
-    walk callable only ever sees envs of its own direction.
+    Keys are the directional task names ``resolve_task`` returns for the active
+    scheme (gait: walk fwd/bwd, hop fwd/bwd, tilt; onehot: walk fwd/bwd, flamingo,
+    tilt). Each callable receives the full RlFTEnv obs (shape [N, n_proprio+2+
+    task_bits]) and returns expert actions [N, 4]; it owns its own obs slicing so
+    PPO_BC stays agnostic to the env layout. The algorithm routes by direction, so
+    each directional callable only ever sees envs of its own direction.
     """
     n_proprio = cfg.n_proprio
-    walk_fwd = load_expert(cfg.expert_paths["walk_forward"])
-    walk_bwd = load_expert(cfg.expert_paths["walk_backward"])
-    hop_fwd = load_expert(cfg.expert_paths["hop_forward"])
-    tilt = load_expert(cfg.expert_paths["body_tilt"])
+    # obs layout: [proprio(n_proprio) | cmd_vel, cmd_tilt | task_bits]
 
-    # obs layout: [proprio(n_proprio) | cmd_vel, cmd_tilt | task_id(task_bits)]
-    def _walk_call(expert):
-        # walk experts expect [proprio | cmd_vel]; the velocity sign already
+    def _vel_call(expert):
+        # walk / hop experts expect [proprio | cmd_vel]; the velocity sign already
         # matches the expert's direction by the time we're routed here.
         def call(obs):
             cmd_vel = obs[:, n_proprio : n_proprio + 1]
@@ -73,22 +69,43 @@ def build_experts(cfg: TrainConfig):
             return expert.predict(x, deterministic=True)[0]
         return call
 
+    def _tilt_call(expert):
+        def call(obs):
+            cmd_tilt = obs[:, n_proprio + 1 : n_proprio + 2]
+            x = np.concatenate([obs[:, :n_proprio], cmd_tilt], axis=-1)
+            return expert.predict(x, deterministic=True)[0]
+        return call
+
+    # expert_paths holds bare paths; prefix with MODELS_DIR here (config stays bare).
+    walk_fwd = load_expert(MODELS_DIR / cfg.expert_paths["walk_forward"])
+    walk_bwd = load_expert(MODELS_DIR / cfg.expert_paths["walk_backward"])
+    tilt = load_expert(MODELS_DIR / cfg.expert_paths["body_tilt"])
+
+    if cfg.task_scheme == GAIT:
+        # directional hops, each velocity-conditioned (hop @ 0 = "flamingo").
+        hop_fwd = load_expert(MODELS_DIR / cfg.expert_paths["hop_forward"])
+        hop_bwd = load_expert(MODELS_DIR / cfg.expert_paths["hop_backward"])
+        return {
+            "walk_forward": _vel_call(walk_fwd),
+            "walk_backward": _vel_call(walk_bwd),
+            "hop_forward": _vel_call(hop_fwd),
+            "hop_backward": _vel_call(hop_bwd),
+            "tilt": _tilt_call(tilt),
+        }
+
+    # onehot legacy: a single "flamingo" task = hop_forward polled at cmd_vel=0.
+    hop_fwd = load_expert(MODELS_DIR / cfg.expert_paths["hop_forward"])
+
     def flamingo_call(obs):
-        # hop_forward expects [proprio | cmd_vel]; poll at cmd_vel=0 for standing.
         zero = np.zeros((obs.shape[0], 1), dtype=obs.dtype)
         x = np.concatenate([obs[:, :n_proprio], zero], axis=-1)
         return hop_fwd.predict(x, deterministic=True)[0]
 
-    def tilt_call(obs):
-        cmd_tilt = obs[:, n_proprio + 1 : n_proprio + 2]
-        x = np.concatenate([obs[:, :n_proprio], cmd_tilt], axis=-1)
-        return tilt.predict(x, deterministic=True)[0]
-
     return {
-        "walk_forward": _walk_call(walk_fwd),
-        "walk_backward": _walk_call(walk_bwd),
+        "walk_forward": _vel_call(walk_fwd),
+        "walk_backward": _vel_call(walk_bwd),
         "flamingo": flamingo_call,
-        "tilt": tilt_call,
+        "tilt": _tilt_call(tilt),
     }
 
 
@@ -102,12 +119,14 @@ def make_env(cfg: TrainConfig):
             ep_time=cfg.ep_time,
             cmd_switching_time=cfg.cmd_switching_time,
             task_switching_time=cfg.task_switching_time,
+            task_switch_replacement=cfg.task_switch_replacement,
             cmd_interp_speed=cfg.cmd_interp_speed,
             cmd_sample_range=cfg.cmd_sample_range,
             cmd_sample_zero=cfg.cmd_sample_zero,
             allowed_task_mixing=cfg.allowed_task_mixing,
             use_rew_for_individual_tasks=cfg.use_indv_task_rew,
             hull_x_range=cfg.hull_x_range,
+            task_scheme=cfg.task_scheme,
         )
     )
     return env
@@ -122,14 +141,18 @@ def make_adversarial_eval_env(cfg: TrainConfig) -> RlFTEnv:
         ep_time=cfg.ep_time,
         cmd_switching_time=cfg.cmd_switching_time,
         task_switching_time=cfg.task_switching_time,
+        # mirror the training env's task config: adversarial selection builds the
+        # PMF positionally over allowed_task_mixing, so the eval env must enumerate
+        # exactly the training tasks in the same order (single, combination, or any
+        # mix). task_switch_replacement is mirrored so the init preflight matches.
+        task_switch_replacement=cfg.task_switch_replacement,
         cmd_interp_speed=cfg.cmd_interp_speed,
         cmd_sample_range=cfg.cmd_sample_range,
         cmd_sample_zero=cfg.cmd_sample_zero,
-        # adversarial selection scores the directional single tasks, so the eval
-        # env must enumerate them (walk_forward, walk_backward, flamingo, tilt).
-        allowed_task_mixing=list(SINGLE_TASKS),
+        allowed_task_mixing=list(cfg.allowed_task_mixing),
         use_rew_for_individual_tasks=True,
         hull_x_range=cfg.hull_x_range,
+        task_scheme=cfg.task_scheme,
     )
 
 
@@ -156,6 +179,7 @@ def main(cfg: TrainConfig):
         train_env,
         experts=experts,
         task_bits=cfg.task_bits,
+        task_scheme=cfg.task_scheme,
         act_var_floor=cfg.act_var_floor,
         bc_coef=cfg.bc_coef,
         bc_batch_size=cfg.bc_batch_size,
@@ -189,15 +213,19 @@ def main(cfg: TrainConfig):
     # set_parameters loads only the policy/optimizer state from the zip —
     # experts/dagger fields stay as wired in this run.
     if cfg.load_model:
-        model.set_parameters(cfg.load_model, exact_match=True, device=cfg.device)
+        # cfg.load_model is a bare path; MODELS_DIR is added here, not in the config.
+        model.set_parameters(
+            str(MODELS_DIR / cfg.load_model), exact_match=True, device=cfg.device
+        )
         if cfg.init_log_std is not None:
             with torch.no_grad():
                 model.policy.log_std.fill_(cfg.init_log_std)
 
-    # load in dagger dataset if specified (npz from a prior dump_dataset call)
+    # load in dagger dataset if specified (npz from a prior dump_dataset call).
+    # cfg.load_dataset is a bare path; DATASET_DIR is added here, not in the config.
     if cfg.load_dataset:
         model.demo_dataset = DaggerDataset.load(
-            cfg.load_dataset, max_size=cfg.dagger_max_size
+            str(DATASET_DIR / cfg.load_dataset), max_size=cfg.dagger_max_size
         )
 
     # define callbacks
@@ -296,6 +324,7 @@ def print_run_info(cfg: TrainConfig, env, model):
             f"ep_time             {cfg.ep_time}s",
             f"cmd_switch vel/tilt {switch_desc(cmd_vel_sw)} / {switch_desc(cmd_tilt_sw)}",
             f"task_switch         {switch_desc(cfg.task_switching_time)}",
+            f"task_switch_replace {cfg.task_switch_replacement}",
             f"cmd_range vel/tilt  {cfg.cmd_sample_range[0]} / {cfg.cmd_sample_range[1]}",
             f"cmd_zero_p vel/tilt {cfg.cmd_sample_zero[0]} / {cfg.cmd_sample_zero[1]}",
             f"cmd_interp vel/tilt {cfg.cmd_interp_speed[0]} / {cfg.cmd_interp_speed[1]}",

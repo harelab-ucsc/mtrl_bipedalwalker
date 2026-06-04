@@ -20,17 +20,29 @@ import numpy as np
 import torch
 from stable_baselines3.common.utils import LinearSchedule
 
-from mdp.bipedal_walker.tasks import SINGLE_TASKS, TaskSpec
-from utils.paths import MODELS_DIR
+from mdp.bipedal_walker.tasks import (
+    GAIT,
+    ONE_LEG,
+    ONEHOT,
+    SINGLE_TASKS,
+    SINGLE_TASKS_GAIT,
+    COMBINATION_TASKS_GAIT,
+    TWO_LEG,
+    GaitTask,
+    TaskSpec,
+)
 
 
-def _default_expert_paths() -> dict[str, object]:
-    # "hop_forward" backs the flamingo task; "body_tilt" backs the tilt task.
+def _default_expert_paths() -> dict[str, str]:
+    # Bare paths under MODELS_DIR; build_experts() in the training script adds the
+    # prefix. Under gait, hop_forward/hop_backward back the directional hops and
+    # body_tilt backs tilt; under onehot, hop_forward backs flamingo.
     return {
-        "walk_forward": MODELS_DIR / "experts" / "walk_forward",
-        "walk_backward": MODELS_DIR / "experts" / "walk_backward",
-        "hop_forward": MODELS_DIR / "experts" / "hop_forward",
-        "body_tilt": MODELS_DIR / "experts" / "body_tilt",
+        "walk_forward": "experts/walk_forward",
+        "walk_backward": "experts/walk_backward",
+        "hop_forward": "experts/hop_forward",
+        "hop_backward": "experts/hop_backward",
+        "body_tilt": "experts/body_tilt",
     }
 
 
@@ -42,39 +54,44 @@ class TrainConfig:
     experiment_name: str = "ppo_bc/base"
     timesteps: int = 200 * 1024 * 14
 
-    # environment
+    # obs-bit scheme: "gait" (default) or "onehot" (legacy). Drives env sampling,
+    # expert routing, and which task-mixing recipe `allowed_task_mixing` should use.
+    task_scheme: str = GAIT
+
+    # environment config
     n_train_envs: int = 14
     n_eval_envs: int = 5
-    ep_time: int = 10
-    # (vel, tilt) secs between cmd resamples; > ep_time disables cmd switching.
-    cmd_switching_time: tuple[float, float] = (11.0, 11.0)
-    # secs between task resamples; > ep_time disables in-episode task switching.
-    task_switching_time: float = 11.0
+    ep_time: int = 10  # episode time
+    cmd_switching_time: tuple[float, float] = (3.0, 4.0)  # (vel, tilt). These should remain on
+    task_switching_time: float = 11.0  # task switching turned off by default
+    # When False, in-episode task draws are without replacement (no consecutive
+    # repeats); RlFTEnv errors at init if draws-per-episode > number of allowed tasks.
+    task_switch_replacement: bool = True
     cmd_interp_speed: tuple[float, float] = (5.0, 1.0)  # (x_vel, tilt)
     cmd_sample_range: tuple[tuple[float, float], tuple[float, float]] = (
         (-5.0, 5.0),
         (-0.75, 0.75),
     )  # (x_vel, tilt)
-    cmd_sample_zero: tuple[float, float] = (0.2, 0.15)
-    # SINGLE_TASKS = 4 directional single tasks; use raw 3-tuples for combos.
-    allowed_task_mixing: Sequence[tuple[int, int, int] | TaskSpec] = SINGLE_TASKS
-    # false: stability-only RL reward; true: task-responsive. Combos always get task reward.
+    cmd_sample_zero: tuple[float, float] = (0.2, 0.15)  # zero command probability
+    allowed_task_mixing: Sequence[
+        tuple[int, int, int] | TaskSpec | GaitTask
+    ] = SINGLE_TASKS_GAIT
     use_indv_task_rew: bool = False
     hull_x_range: tuple[float, float] = (20.0, 60.0)
 
-    # DAgger / BC
+    # DAgger / BC config
     task_bits: int = 3  # trailing obs dims that identify the task
     n_proprio: int = 14  # post-ProprioObsWrapper proprioception size
-    act_var_floor: float = 0.05  # additive variance bias/floor on the student action dist
+    act_var_floor: float = 0  # additive variance bias/floor on the student action dist
     bc_coef: float = 0.20  # weight on the BC loss in the total loss
     bc_batch_size: int = 256
-    bc_loss_type: str = "nll"  # "nll" (log-likelihood) or "mse"
-    dagger_max_size: int | None = None  # cap on aggregated demos (None disables)
-    collect_data: bool = True  # toggle DAgger relabeling + buffer growth
+    bc_loss_type: str = "nll"  # nll / mse
+    dagger_max_size: int | None = None  # cap on D
+    collect_data: bool = True  # whether to collect DAgger rollouts or not
 
     # adversarial task sampling
-    adversarial_ag: bool = True  # difficulty-weighted task sampling (needs SINGLE_TASKS)
-    adversarial_eval_steps_per_task: int = 10000  # eval steps per task per rescore
+    adversarial_ag: bool = True  # difficulty-weighted task sampling over allowed_task_mixing
+    adversarial_eval_steps_per_task: int = 5000  # eval steps per task per rescore
     adversarial_k: float = 0.85  # 1.0 = pure adversarial, 0.0 = uniform
 
     # resume / warm-start
@@ -104,55 +121,211 @@ class TrainConfig:
     activation_fn: type[torch.nn.Module] = torch.nn.ELU
 
     # experts
-    expert_paths: dict[str, object] = field(default_factory=_default_expert_paths)
+    expert_paths: dict[str, str] = field(default_factory=_default_expert_paths)
 
 
-# Primarily-IL single-task pretrain: one fixed task+cmd per episode (switching off),
-# stability-only RL reward, BC carries imitation, adversarial up-weights hard tasks.
+# Primarily-IL single-task pretrain: stability-only RL reward, BC carries imitation,
+# adversarial up-weights hard tasks. Task switching is ON (5s < ep_time) and draws
+# without replacement, so consecutive segments never repeat the same task.
 PRETRAIN = TrainConfig(
-    experiment_name="ppo_bc/pretrain/1.0.3",
-    timesteps=200*1024*14,
+    # identity
+    experiment_name="ppo_bc_adv/pretrain/1.0.4",
+    timesteps=400*1024*14,
+    task_scheme=ONEHOT,
+    # environment
     allowed_task_mixing=SINGLE_TASKS,
+    task_switching_time=5.0,
+    task_switch_replacement=False,
     use_indv_task_rew=False,
-    adversarial_ag=False,
-    bc_coef=0.7,
-    bc_loss_type="nll",
+    # dagger / bc
     act_var_floor=0.2,
+    bc_coef=0.2,
+    bc_loss_type="mse",
+    dagger_max_size=None,
+    # adversarial
+    adversarial_ag=True,
+    adversarial_eval_steps_per_task=5000,
+    # ppo
     learning_rate=LinearSchedule(5e-4, 3e-5, 0.8),
 )
 
-# SCAFFOLD — single-task RL fine-tune: warm-start from pretrain, switching on,
-# task rewards on so RL refines what BC couldn't. Fill in the TODOs before using.
-FINETUNE = TrainConfig(
-    experiment_name="ppo_bc/2.0.0",  # TODO: pick the finetune experiment id
-    load_model=None,  # TODO: point at the pretrain best/final checkpoint
-    ep_time=15,  # TODO: confirm finetune episode length
-    cmd_switching_time=(3.0, 4.0),  # switching ON. TODO: tune cadence
-    task_switching_time=6.0,
-    use_indv_task_rew=True,
-    learning_rate=LinearSchedule(1e-4, 1e-5, 0.8),  # TODO: typically lower than pretrain
+PRETRAIN_2 = TrainConfig(
+    # identity
+    experiment_name="ppo_bc/pretrain/2.0.0",
+    timesteps=300*1024*14,
+    task_scheme=GAIT,
+    # environment
+    allowed_task_mixing=SINGLE_TASKS_GAIT,
+    ep_time=10,
+    task_switching_time=11.0,
+    task_switch_replacement=False,
+    use_indv_task_rew=False,
+    # dagger / bc
+    act_var_floor=0.2,
+    bc_coef=0.5,
+    bc_loss_type="mse",
+    dagger_max_size=None,
+    # adversarial
+    adversarial_ag=False,
+    adversarial_eval_steps_per_task=0,
+    # ppo
+    learning_rate=LinearSchedule(5e-4, 3e-5, 0.8),
 )
 
-# SCAFFOLD — combined tasks (e.g. walk+tilt): no single expert, so RL-driven via
-# task reward. Adversarial off (it requires allowed == SINGLE_TASKS). Fill TODOs.
-COMBINATION = TrainConfig(
-    experiment_name="ppo_bc/3.0.0",  # TODO: pick the combination experiment id
-    load_model=None,  # TODO: point at the finetune/pretrain checkpoint
-    allowed_task_mixing=(  # TODO: choose the combinations to train
-        *SINGLE_TASKS,
-        (1, 0, 1),  # walk + tilt
-        (1, 1, 0),  # walk + flamingo
+PRETRAIN_3 = TrainConfig(
+    # identity
+    experiment_name="ppo_bc_adv/pretrain/3.0.0",
+    timesteps=600*1024*14,
+    task_scheme=GAIT,
+    # environment
+    allowed_task_mixing=(
+        GaitTask("walk_forward", TWO_LEG, (0.0, 5.0), (0.0, 0.0)),
+        GaitTask("walk_backward", TWO_LEG, (-5.0, 0.0), (0.0, 0.0)),
+        GaitTask("hop_forward", ONE_LEG, (0.0, 5.0), (0.0, 0.0)),
+        GaitTask("hop_backward", ONE_LEG, (-5.0, 0.0), (0.0, 0.0)),
+        GaitTask("tilt", TWO_LEG, (0.0, 0.0), (-0.75, 0.75)),
+        GaitTask("walk_forward+tilt", TWO_LEG, (0.0, 5.0), (-0.75, 0.75)),
+        GaitTask("walk_backward+tilt", TWO_LEG, (-5.0, 0.0), (-0.75, 0.75)),
     ),
-    ep_time=15,  # TODO: confirm episode length
-    cmd_switching_time=(3.0, 4.0),
-    task_switching_time=6.0,
+    ep_time=10,
+    task_switching_time=5.0,
+    task_switch_replacement=False,
+    use_indv_task_rew=False,
+    # dagger / bc
+    act_var_floor=0.2,
+    bc_coef=0.2,
+    bc_loss_type="mse",
+    dagger_max_size=2_000_000,
+    # adversarial — on even though this trains on everything (singles + combos) in
+    # one shot. The eval env mirrors allowed_task_mixing and scores every task on
+    # time-alive, so the PMF up-weights the hardest tasks (typically the combos).
+    adversarial_ag=True,
+    adversarial_eval_steps_per_task=5000,
+    # ppo
+    learning_rate=LinearSchedule(5e-4, 3e-5, 0.8),
+)
+
+# Combined tasks (walk+tilt, flamingo+tilt): no single expert, so RL-driven via the
+# task reward. The loaded DAgger dataset is single-task expert demos and acts purely as
+# a low-weight BC regularizer against forgetting. Adversarial off here by choice —
+# only the combos are polled (uniformly); singles are held by the regularizer, not
+# retrained.
+COMBINATION = TrainConfig(
+    # identity
+    experiment_name="ppo_bc_adv/combination/1.3.1",
+    task_scheme=ONEHOT,
+    load_model="ppo_bc_adv/pretrain/1.0.3c/final.zip",  # pretrained critic and actor
+    load_dataset="ppo_bc_adv/pretrain/1.0.3.npz",
+    # environment
+    allowed_task_mixing=(
+        TaskSpec("walk_forward+tilt", (1, 0, 1), +1),  # forward walk + tilt
+        TaskSpec("walk_backward+tilt", (1, 0, 1), -1),  # backward walk + tilt
+        # (0, 1, 1),  # flamingo + tilt
+    ),
+    ep_time=10,
+    cmd_switching_time=(5.0, 5.0),
+    task_switching_time=11.0,  # no task switching for now, just focus on task combination
+    use_indv_task_rew=True,
+    # dagger / bc
+    bc_coef=0.1,  # regularization instead of dominating signal
+    bc_loss_type="mse",  # always MSE, NLL tries to minimize variance too
+    collect_data=False,  # no DAgger during RL
+    # adversarial
     adversarial_ag=False,
+    # std=0.5 on warm-start matches the critic (1.0.2c) calibration, vs the default 1.0.
+    init_log_std=float(np.log(0.5)),
+    # ppo
+    learning_rate=LinearSchedule(5e-5, 5e-6, 0.8),
+    ent_coef=0.005,
+    clip_range=0.1,
+)
+
+
+# =============================== gait (2.x.x) ===============================
+# Our-method stage 1 (mostly IL): single-task pretrain over the 5 gait tasks
+# (walk fwd/bwd, hop fwd/bwd, tilt). High bc_coef so BC carries imitation; the RL
+# reward is stability-only. Task switching ON without replacement (5 tasks, 5s
+# switch over a 10s ep ⇒ 3 distinct draws ≤ 5). Adversarial up-weights hard tasks.
+PRETRAIN_GAIT = TrainConfig(
+    experiment_name="ppo_bc_gait/pretrain/2.0.0",
+    task_scheme=GAIT,
+    timesteps=400 * 1024 * 14,
+    # environment
+    allowed_task_mixing=SINGLE_TASKS_GAIT,
+    task_switching_time=5.0,
+    task_switch_replacement=False,
+    use_indv_task_rew=False,
+    # dagger / bc — high BC weight (0.5–0.7) so imitation dominates the pretrain
+    act_var_floor=0.2,
+    bc_coef=0.6,
+    bc_loss_type="mse",
+    # adversarial
+    adversarial_ag=True,
+    adversarial_eval_steps_per_task=5000,
+    # ppo
+    learning_rate=LinearSchedule(5e-4, 3e-5, 0.8),
+)
+
+# Our-method stage 2 (mostly RL, BC as regularization): rapid task switching with a
+# much lower bc_coef. Warm-start from a critic re-fit on the gait switching reward
+# (see ppo_bc/pretrain_critic_config.py). 5 tasks + 2s switching over a 10s ep ⇒ 6
+# draws, so draw WITH replacement (without-replacement would need ≥ 6 tasks).
+SWITCHING_GAIT = TrainConfig(
+    experiment_name="ppo_bc_gait/switching/2.0.0",
+    task_scheme=GAIT,
+    load_model="ppo_bc_gait/pretrain/2.0.0c/final.zip",  # critic re-fit + actor
+    # environment
+    allowed_task_mixing=SINGLE_TASKS_GAIT,
+    task_switching_time=2.0,  # switch fast
+    task_switch_replacement=True,
+    use_indv_task_rew=True,
+    # dagger / bc — low weight: expert relabeling only regularizes against forgetting
+    bc_coef=0.1,
+    bc_loss_type="mse",
+    collect_data=True,
+    # adversarial off — uniform rapid switching
+    adversarial_ag=False,
+    init_log_std=float(np.log(0.5)),
+    # ppo — lower, decaying LR + tight clip for fine-tuning
+    learning_rate=LinearSchedule(5e-5, 5e-6, 0.8),
+    ent_coef=0.005,
+    clip_range=0.1,
+)
+
+# Walk + tilt combination (no single expert → RL-driven via the task reward). Loaded
+# DAgger dataset (if any) only regularizes; combos aren't relabeled. Switching off to
+# focus on the combination.
+COMBINATION_GAIT = TrainConfig(
+    experiment_name="ppo_bc_gait/combination/2.0.0",
+    task_scheme=GAIT,
+    load_model="ppo_bc_gait/pretrain/2.0.0c/final.zip",  # critic re-fit + actor
+    # environment
+    allowed_task_mixing=COMBINATION_TASKS_GAIT,
+    cmd_switching_time=(5.0, 5.0),
+    task_switching_time=11.0,  # no switching — focus on the combination
+    use_indv_task_rew=True,
+    # dagger / bc
+    bc_coef=0.1,
+    bc_loss_type="mse",
+    collect_data=False,
+    adversarial_ag=False,
+    init_log_std=float(np.log(0.5)),
+    # ppo
+    learning_rate=LinearSchedule(5e-5, 5e-6, 0.8),
+    ent_coef=0.005,
+    clip_range=0.1,
 )
 
 
 # Registry consumed by train.py's --preset flag.
 PRESETS: dict[str, TrainConfig] = {
+    # gait (2.x.x)
+    "pretrain_gait": PRETRAIN_GAIT,
+    "switching_gait": SWITCHING_GAIT,
+    "combination_gait": COMBINATION_GAIT,
+    # legacy onehot (1.x.x)
     "pretrain": PRETRAIN,
-    "finetune": FINETUNE,
+    "pretrain_2": PRETRAIN_2,
+    "pretrain_3": PRETRAIN_3,
     "combination": COMBINATION,
 }

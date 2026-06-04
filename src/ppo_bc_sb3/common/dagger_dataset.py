@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
-from typing import Tuple
+from typing import Tuple, cast
 
 import numpy as np
 import torch as th
 
 from stable_baselines3.common.utils import get_device
+
+from mdp.bipedal_walker.tasks import GAIT
 
 
 class DaggerDataset:
@@ -75,18 +77,20 @@ class DaggerDataset:
         expert_actions = np.stack([a for _, a in self.D])
         return obs, expert_actions
 
-    def task_counts(self, task_bits: int) -> dict[str, int]:
-        """Count entries by directional task name (walk_forward / walk_backward /
-        flamingo / tilt), derived from each stored obs's task bits + velocity sign.
-        Combined / unrecognized vectors bucket under their composed name. One pass
-        over D. cmd_vel sits at obs[-task_bits - 2] (layout: [..., cmd_vel, cmd_tilt,
-        *task_bits])."""
-        from mdp.bipedal_walker.tasks import _name_from_bits, resolve_task
+    def task_counts(self, task_bits: int, scheme: str = GAIT) -> dict[str, int]:
+        """Count entries by directional task name, derived from each stored obs's
+        task bits + commands (scheme-aware; see tasks.resolve_task). Combined /
+        unrecognized vectors bucket under their composed name. One pass over D.
+        Layout: [..., cmd_vel, cmd_tilt, *task_bits], so cmd_vel = obs[-task_bits-2]
+        and cmd_tilt = obs[-task_bits-1]."""
+        from mdp.bipedal_walker.tasks import _name_from_bits, resolve_single_task
 
         counts: dict[str, int] = {}
         for obs, _ in self.D:
-            bits = tuple(int(x) for x in obs[-task_bits:])
-            spec = resolve_task(bits, float(obs[-task_bits - 2]))
+            bits = cast(tuple[int, int, int], (int(x) for x in obs[-task_bits:]))
+            spec = resolve_single_task(
+                bits, float(obs[-task_bits - 2]), float(obs[-task_bits - 1]), scheme
+            )
             key = spec.name if spec is not None else _name_from_bits(bits)
             counts[key] = counts.get(key, 0) + 1
         return counts

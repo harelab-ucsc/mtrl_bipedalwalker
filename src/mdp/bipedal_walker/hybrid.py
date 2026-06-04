@@ -2,6 +2,7 @@ import numpy as np
 from stable_baselines3 import PPO
 import torch
 from utils.paths import MODELS_DIR
+from mdp.bipedal_walker.tasks import GAIT
 
 BASE_OBS_SIZE = 14
 ACT_SIZE = 4
@@ -16,6 +17,9 @@ EXPERT_MODEL_PATHS = [
 
 
 class HybridModel():
+    """Legacy onehot oracle (V1 2-bit + V2 3-bit one-hot obs). Kept for old
+    checkpoints; new gait runs use HybridModelV2(scheme="gait")."""
+
     def __init__(self):
         self.expert_models = [
             PPO.load(MODELS_DIR / i, env=None, device="cpu") for i in EXPERT_MODEL_PATHS
@@ -75,43 +79,56 @@ class HybridModel():
 
 
 class HybridModelV2():
-    """Oracle baseline for the V2 4-task setup.
+    """Oracle baseline for the V2 setup (obs: [base(14), cmd_vel, cmd_tilt, b0, b1, b2]).
 
-    Routing per task (obs layout: [base(14), cmd_vel, cmd_tilt, walk, hop, tilt]):
-      walk  [1,0,0] — walk_forward  expert (cmd_vel >= 0) or walk_backward (cmd_vel < 0)
-      hop   [0,1,0] — hop_backward  expert @ 0  (flamingo is always hop_backward @ 0)
-      tilt  [0,0,1] — body_tilt     expert with cmd_tilt
+    Each active component routes to its single-task expert; combined tasks (no
+    combination expert) average the active experts' actions (a single-task obs has
+    one active expert, so the average reduces to it). Scheme-aware:
+
+    "gait" (default) — bits = (two_leg, one_leg, unused):
+      one_leg → hop_forward (cmd_vel >= 0) / hop_backward (cmd_vel < 0)
+      two_leg → body_tilt (cmd_tilt != 0) and/or walk_forward/backward (by cmd_vel
+                sign); a pure stand (both commands 0) defaults to walk @ 0.
+    "onehot" (legacy) — bits = (walk, flamingo, tilt):
+      walk → walk_forward/backward; flamingo → hop_backward @ 0; tilt → body_tilt.
     """
 
-    def __init__(self):
+    def __init__(self, scheme: str = GAIT):
+        self.scheme = scheme
         self.expert_models = [
             PPO.load(MODELS_DIR / i, env=None, device="cpu") for i in EXPERT_MODEL_PATHS
         ]
+
+    def _predict(self, idx: int, base_obs: np.ndarray, cmd: float) -> np.ndarray:
+        return self.expert_models[idx].predict(
+            np.append(base_obs, cmd), deterministic=True
+        )[0]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base_obs = x[:BASE_OBS_SIZE].numpy()
         cmd_vel  = x[-5].item()
         cmd_tilt = x[-4].item()
-        walk_bit = x[-3].item()
-        hop_bit  = x[-2].item()
-        tilt_bit = x[-1].item()
+        b0, b1, b2 = x[-3].item(), x[-2].item(), x[-1].item()
 
-        if tilt_bit == 1:
-            action, _ = self.expert_models[4].predict(
-                np.append(base_obs, cmd_tilt), deterministic=True
-            )
-        elif hop_bit == 1:
-            # flamingo: hop_backward expert at cmd_vel=0
-            action, _ = self.expert_models[3].predict(
-                np.append(base_obs, 0.0), deterministic=True
-            )
-        elif walk_bit == 1 and cmd_vel >= 0:
-            action, _ = self.expert_models[0].predict(
-                np.append(base_obs, cmd_vel), deterministic=True
-            )
-        elif walk_bit == 1 and cmd_vel < 0:
-            action, _ = self.expert_models[1].predict(
-                np.append(base_obs, cmd_vel), deterministic=True
-            )
+        actions = []
+        if self.scheme == GAIT:
+            two_leg, one_leg = b0, b1
+            if one_leg == 1:  # directional hop (flamingo = hop_forward @ 0)
+                idx = 2 if cmd_vel >= 0 else 3
+                actions.append(self._predict(idx, base_obs, cmd_vel))
+            if two_leg == 1:
+                if cmd_tilt != 0:  # tilt component
+                    actions.append(self._predict(4, base_obs, cmd_tilt))
+                if cmd_vel != 0 or cmd_tilt == 0:  # walk component (pure-stand → walk @ 0)
+                    idx = 0 if cmd_vel >= 0 else 1
+                    actions.append(self._predict(idx, base_obs, cmd_vel))
+        else:  # onehot
+            walk_bit, hop_bit, tilt_bit = b0, b1, b2
+            if walk_bit == 1:
+                actions.append(self._predict(0 if cmd_vel >= 0 else 1, base_obs, cmd_vel))
+            if hop_bit == 1:
+                actions.append(self._predict(3, base_obs, 0.0))
+            if tilt_bit == 1:
+                actions.append(self._predict(4, base_obs, cmd_tilt))
 
-        return torch.tensor(action)
+        return torch.tensor(np.mean(actions, axis=0))

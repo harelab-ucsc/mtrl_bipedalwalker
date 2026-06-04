@@ -1,0 +1,69 @@
+eval_name: switching_eval_2  # names the output dir (the script appends "_switching")
+task_scheme: onehot  # legacy one-hot (walk, flamingo, tilt) eval; gait is the default
+
+# --- episode / switch ---
+ep_time: 10              # seconds per episode -> the survival window (N = ep_time * 50 frames)
+switch_fraction: 0.3333  # fraction of the episode held by task A before switching to B (N/3)
+episodes_per_pair: 2000  # episodes per (model, ordered pair A->B); 12 pairs total
+episode_chunk: 100       # episodes per pool job (load balancing)
+seed_base: 42            # episode i uses the same seed across models (fair comparison)
+
+# --- command sampling ranges ---
+cmd_vel_forward_range: [0.0, 5.0]    # walk_forward velocity (m/s)
+cmd_vel_backward_range: [-5.0, 0.0]  # walk_backward velocity (m/s)
+cmd_tilt_range: [-0.75, 0.75]        # tilt hull-angle command (rad)
+
+# --- run controls ---
+only_models: null        # list of model names to run (subset), or null for all
+date_suffix: false       # append a timestamp to the output dir name (set false to overwrite)
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle).
+# ref:  checkpoint path relative to models/ (hybrid: null). HARD-CODED on purpose —
+#       point it at the exact checkpoint you want (e.g. the latest, not best/best_model.zip).
+# desc: shown in models.md / meta.json (the chart legend uses `name`).
+models:
+  - name: ppo_bc/pretrain/1.0.2
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.2/final.zip
+    desc: "PPO+BC pretrained; Unif task sampling; MSE loss; BC_COEF = 0.2; limited DAgger; 2x train time"
+
+  - name: ppo_bc_adv/pretrain/1.0.2
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/1.0.2/final.zip
+    desc: "PPO+BC pretrained; Adv task sampling; MSE loss; BC_COEF = 0.2; limited DAgger; 2x train time"
+
+  - name: ppo_bc/pretrain/1.0.3
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.3/final.zip
+    desc: "PPO+BC pretrained; Unif task sampling; NLL loss; BC_COEF = 0.7"
+
+  - name: ppo_bc_adv/pretrain/1.0.3
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/1.0.3/final.zip
+    desc: "PPO+BC pretrained; Adv task sampling; NLL loss; BC_COEF = 0.7"
+
+  - name: ppo_bc/pretrain/1.0.4
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.4/final.zip
+    desc: "PPO+BC pretrained; Unif task sampling; MSE loss; 2x train time; Trained on task switching"
+
+  - name: ppo_bc_adv/pretrain/1.0.4
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/1.0.4/final.zip
+    desc: "PPO+BC pretrained; Adv task sampling; MSE loss; 2x train time; Trained on task switching"
+
+  - name: rudin/distill/1.0.0
+    kind: torch
+    ref: rudin/distill/1.0.0/final.pt
+    desc: "DAgger distilled; Unif task sampling; MSE loss"
+
+  - name: rudin_adv/distill/1.0.0
+    kind: torch
+    ref: rudin_adv/distill/1.0.0/final.pt
+    desc: "DAgger distilled; Adv task sampling; MSE loss"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle"

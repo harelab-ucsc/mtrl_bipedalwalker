@@ -1,0 +1,50 @@
+# Template config for scripts/eval/task_combination_eval.py — copy and edit:
+#     python scripts/eval/task_combination_eval.py myexp        # by name
+#     python scripts/eval/task_combination_eval.py path/to/x.yaml
+
+eval_name: combination_default
+task_scheme: onehot  # legacy one-hot (walk, flamingo, tilt) eval; gait is the default
+date_suffix: true
+
+ep_time: 10
+modulate_period: 3
+episodes_per_combo: 5000
+episode_chunk: 100
+seed_base: 42
+
+cmd_vel_forward_range: [0.0, 5.0]
+cmd_vel_backward_range: [-5.0, 0.0]
+cmd_tilt_range: [-0.75, 0.75]
+
+# Combinations to evaluate. bits = (walk, flamingo, tilt); set 1+ bits.
+# walk_dir (forward|backward) is required when the walk bit is set, ignored otherwise.
+task_combinations:
+  - name: walk_fwd+tilt
+    bits: [1, 0, 1]
+    walk_dir: forward
+  - name: walk_bwd+tilt
+    bits: [1, 0, 1]
+    walk_dir: backward
+  # - name: flamingo+tilt
+  #   bits: [0, 1, 1]
+  #   walk_dir: null
+
+only_models: null
+
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (averaged-expert baseline).
+# ref: checkpoint path relative to models/ (hybrid: null).
+models:
+  - name: ppo_bc/pretrain/1.0.0
+    kind: sb3
+    ref: ppo_bc/pretrain/1.0.0/final.zip
+    desc: "PPO+BC pretrained; Unif task sampling; NLL loss; BC_COEF = 0.2"
+
+  - name: rudin/distill/1.0.0
+    kind: torch
+    ref: rudin/distill/1.0.0/final.pt
+    desc: "DAgger distilled; Unif task sampling; MSE loss"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Averaged-expert baseline (no true combination expert)"

@@ -32,7 +32,10 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from ppo_bc_sb3.common.buffers import DictRolloutBuffer, RolloutBuffer
 from ppo_bc_sb3.common.dagger_dataset import DaggerDataset
-from mdp.bipedal_walker.tasks import SINGLE_TASKS, TaskSpec, resolve_task
+from mdp.bipedal_walker.tasks import (
+    GAIT,
+    resolve_single_task,
+)
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 
 # An expert is any callable mapping raw obs (already in the env's full layout)
@@ -43,15 +46,13 @@ ExpertFn = Callable[[np.ndarray], np.ndarray]
 SelfOnPolicyAlgorithm = TypeVar("SelfOnPolicyAlgorithm", bound="OnPolicyAlgorithm")
 
 # ---- adversarial task selection ------------------------------------------------
-# Run the current policy through each isolated task to get a per-task time-alive
-# score, then convert scores → sampling PMF (harder = more frequent). Mirrors
+# Run the current policy through each task in the eval env's allowed_task_mixing
+# to get a per-task time-alive score, then convert scores → sampling PMF (harder =
+# more frequent) and broadcast it to the training envs. Mirrors
 # scripts/distillation/train.py: getTaskPMF / evaluate. The eval budget per task
 # and the adversarial/uniform mix are per-run config (see OnPolicyAlgorithm args).
-# The directional single tasks: walk_forward, walk_backward, flamingo, tilt. Walk
-# is split by direction so the PMF can up-weight the weaker direction on its own.
-_ADVERSARIAL_TASKS: tuple[TaskSpec, ...] = SINGLE_TASKS
-
-
+# The scored set is whatever the env allows — directional single tasks, combinations,
+# anything — so the PMF up-weights the weakest of exactly the tasks being trained.
 def _task_pmf_from_scores(scores: list[float], k: float) -> list[float]:
     """Port of distill's getTaskPMF: weight by (max - score) so worst task gets
     the most mass, then mix with uniform by ``k``."""
@@ -97,6 +98,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         max_grad_norm: float,
         use_sde: bool,
         sde_sample_freq: int,
+        task_scheme: str = GAIT,
         collect_data: bool = True,
         adversarial_ag: bool = False,
         adversarial_eval_env: RlFTEnv | None = None,
@@ -154,6 +156,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.act_var_floor = act_var_floor
         self.policy_kwargs["act_var_floor"] = act_var_floor
         self.task_bits = task_bits
+        # obs-bit scheme ("gait" default / "onehot" legacy); drives expert routing.
+        self.task_scheme = task_scheme
         # when False, skip expert relabeling + demo buffer growth entirely
         # (used by critic-pretrain runs where the BC loss is unused).
         self.collect_data = collect_data
@@ -272,9 +276,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         obs = cast(np.ndarray, obs)
         task_ids = obs[:, -self.task_bits:]
-        # effective cmd_vel (its sign selects walk_forward vs walk_backward).
-        # Layout: [..., cmd_vel, cmd_tilt, *task_bits], so cmd_vel = -task_bits - 2.
+        # effective commands. Layout: [..., cmd_vel, cmd_tilt, *task_bits], so
+        # cmd_vel = -task_bits - 2 and cmd_tilt = -task_bits - 1. cmd_vel's sign
+        # selects fwd/bwd; under gait cmd_tilt splits walk (0) from tilt (!=0).
         cmd_vels = obs[:, -self.task_bits - 2]
+        cmd_tilts = obs[:, -self.task_bits - 1]
         n_envs = obs.shape[0]
 
         act_shape = self.action_space.shape or ()
@@ -286,7 +292,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         # task vectors resolve to "" → no matching expert → filtered out below.
         names = np.empty(n_envs, dtype=object)
         for i in range(n_envs):
-            spec = resolve_task(task_ids[i], float(cmd_vels[i]))
+            spec = resolve_single_task(
+                task_ids[i], float(cmd_vels[i]), float(cmd_tilts[i]), self.task_scheme
+            )
             names[i] = spec.name if spec is not None else ""
 
         for task_name, expert_fn in self.experts.items():
@@ -513,7 +521,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         ds_len = len(self.demo_dataset)
         self.logger.record("dagger/dataset_size", ds_len)
         if ds_len > 0:
-            counts = self.demo_dataset.task_counts(self.task_bits)
+            counts = self.demo_dataset.task_counts(self.task_bits, self.task_scheme)
             for tag, c in counts.items():
                 self.logger.record(f"dagger/task_pct_{tag}", c / ds_len)
         for tag, n_q in self._expert_queries_rollout.items():
@@ -522,29 +530,28 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.logger.dump(step=self.num_timesteps)
 
     def eval_expert_task_performance(self) -> list[float]:
-        """Score the current policy on each isolated task and push the
-        resulting adversarial PMF to every training env.
+        """Score the current policy on each of the eval env's allowed tasks and
+        push the resulting adversarial PMF to every training env.
 
-        Returns the per-task mean time-alive in step units (same order as
-        ``_ADVERSARIAL_TASKS`` = walk_forward, walk_backward, flamingo, tilt).
-        Returns ``[]`` and leaves env probs untouched if adversarial selection is
-        disabled, the eval env is missing, or the env's allowed_task_mixing is not
-        exactly the directional single tasks.
+        Each task in the eval env's ``allowed_task_mixing`` is forced in turn and
+        scored by mean time-alive (step units). Scores become a sampling PMF
+        (harder = lower time-alive = more mass) that is broadcast *positionally*
+        over ``allowed_task_mixing`` — so the eval env MUST be built with the same
+        ``allowed_task_mixing`` (same tasks, same order) as the training envs, or
+        the PMF lands on the wrong tasks. Works for any task set (single tasks,
+        combinations, etc.), not just the scheme's directional single tasks.
+
+        Returns the per-task mean time-alive in the eval env's allowed-task order,
+        or ``[]`` if adversarial selection is disabled or the eval env is missing.
         """
         if not self.adversarial_ag or self.adversarial_eval_env is None:
             return []
         env = self.adversarial_eval_env
-        if list(env._allowed_tasks) != list(_ADVERSARIAL_TASKS):
-            warnings.warn(
-                "adversarial task selection requires allowed_task_mixing == "
-                "SINGLE_TASKS (walk_forward, walk_backward, flamingo, tilt); "
-                "skipping eval and PMF update."
-            )
-            return []
+        tasks = list(env._allowed_tasks)
 
         self.policy.set_training_mode(False)
         scores: list[float] = []
-        for task in _ADVERSARIAL_TASKS:
+        for task in tasks:
             env.set_forced_task(task)
             obs, _ = env.reset()
             times: list[int] = []
@@ -571,7 +578,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         assert self.env is not None
         self.env.env_method("set_task_sample_probs", tuple(probs))
 
-        for task, s, p in zip(_ADVERSARIAL_TASKS, scores, probs):
+        for task, s, p in zip(tasks, scores, probs):
             self.logger.record(f"adversarial/time_alive_{task.name}", s)
             self.logger.record(f"adversarial/prob_{task.name}", p)
 

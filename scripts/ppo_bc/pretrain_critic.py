@@ -3,8 +3,14 @@ Critic pretraining for PPO_BC.
 
 Loads a trained PPO_BC actor, drops a fresh critic next to it, and runs PPO
 with the actor frozen so only the value network learns. Output is a PPO_BC
-zip that train.py can resume via LOAD_MODEL
+zip that train.py can resume via ``load_model``.
+
+All hyperparameters live in pretrain_critic_config.py; pick one with --preset.
 """
+
+import argparse
+from functools import partial
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -17,7 +23,6 @@ from stable_baselines3.common.callbacks import (
 )
 from stable_baselines3.common.logger import configure
 
-from datetime import datetime
 import time
 import os
 import subprocess
@@ -27,6 +32,10 @@ from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
 
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 from ppo_bc_sb3 import PPO_BC, PpoBcPolicy, load_expert
+from mdp.bipedal_walker.tasks import GAIT
+
+# all hyperparameters live in pretrain_critic_config.py; pick one with --preset.
+from pretrain_critic_config import PRESETS, PretrainCriticConfig
 
 if not os.path.exists(MODELS_DIR / "ppo_bc"):
     os.makedirs(MODELS_DIR / "ppo_bc")
@@ -35,119 +44,78 @@ if not os.path.exists(LOGS_DIR / "ppo_bc"):
 
 # =========================================
 
-# output
-EXPERIMENT_NAME = "ppo_bc/critic_pretrain/1.2.0"
-TIMESTEPS = 200 * 1024 * 14
 
-# ppo bc prior
-LOAD_ACTOR_FROM = MODELS_DIR / "ppo_bc" / "1.2.0-21_04_31-2026_05_26" / "rl_model_2799664_steps.zip"
+def build_experts(cfg: PretrainCriticConfig):
+    """Load expert checkpoints once and return a dict[task_name, callable(obs)->act].
 
-# environment params
-N_TRAIN_ENVS         = 14
-EP_TIME              = 10
-CMD_SWITCHING_TIME   = (3.0, 4.0)   # (vel, tilt)
-TASK_SWITCHING_TIME  = 6.0
-CMD_INTERP_SPEED     = (5.0, 1.0)
-CMD_SAMPLE_RANGE     = ((-5.0, 5.0), (-0.75, 0.75))
-CMD_SAMPLE_ZERO      = (0.2, 0.15)
-# needed for task combination
-ALLOWED_TASK_MIXING  = [
-    (1, 0, 0),
-    (0, 1, 0),
-    (0, 0, 1),
-    (1, 1, 0),
-    (1, 0, 1),
-]
-HULL_X_RANGE         = (20.0, 60.0)
+    Mirrors train.py.build_experts (scheme-aware keys). Required by the PPO_BC ctor
+    but never polled here (collect_data=False), so it just needs to be present and
+    consistent with the active scheme's directional task names.
+    """
+    n_proprio = cfg.n_proprio
 
-# pretraining hyperparams (high vf_coef, no ent bonus, no BC)
-PRETRAIN_LR           = 1e-3
-PRETRAIN_N_EPOCHS     = 20
-PRETRAIN_N_STEPS      = 1024
-PRETRAIN_BATCH_SIZE   = 256
-PRETRAIN_ENT_COEF     = 0.0
-PRETRAIN_VF_COEF      = 1.0
-PRETRAIN_INIT_LOG_STD = float(np.log(0.1))   # tight policy — stay near actor's mode
+    def _vel_call(expert):
+        def call(obs):
+            cmd_vel = obs[:, n_proprio : n_proprio + 1]
+            x = np.concatenate([obs[:, :n_proprio], cmd_vel], axis=-1)  # [N, 15]
+            return expert.predict(x, deterministic=True)[0]
+        return call
 
-# shared PPO config
-GAMMA          = 0.99
-GAE_LAMBDA     = 0.95
-CLIP_RANGE     = 0.2
-MAX_GRAD_NORM  = 0.5
-DEVICE         = torch.device("cpu")
+    def _tilt_call(expert):
+        def call(obs):
+            cmd_tilt = obs[:, n_proprio + 1 : n_proprio + 2]
+            x = np.concatenate([obs[:, :n_proprio], cmd_tilt], axis=-1)
+            return expert.predict(x, deterministic=True)[0]
+        return call
 
-# network arch
-# HIDDEN_DIMS must match the actor in LOAD_ACTOR_FROM
-HIDDEN_DIMS          = [256, 128, 64]
-CRITIC_HIDDEN_DIMS   = [1024, 512, 512, 256, 256]
-ACTIVATION_FN        = torch.nn.ELU
+    # expert_paths holds bare paths; prefix with MODELS_DIR here (config stays bare).
+    walk_fwd = load_expert(MODELS_DIR / cfg.expert_paths["walk_forward"])
+    walk_bwd = load_expert(MODELS_DIR / cfg.expert_paths["walk_backward"])
+    tilt = load_expert(MODELS_DIR / cfg.expert_paths["body_tilt"])
 
-# task / DAgger bits (ctor needs them; relabeling is disabled below)
-TASK_BITS         = 3
-N_PROPRIO         = 14
-ACT_VAR_FLOOR     = 0.0
+    if cfg.task_scheme == GAIT:
+        hop_fwd = load_expert(MODELS_DIR / cfg.expert_paths["hop_forward"])
+        hop_bwd = load_expert(MODELS_DIR / cfg.expert_paths["hop_backward"])
+        return {
+            "walk_forward": _vel_call(walk_fwd),
+            "walk_backward": _vel_call(walk_bwd),
+            "hop_forward": _vel_call(hop_fwd),
+            "hop_backward": _vel_call(hop_bwd),
+            "tilt": _tilt_call(tilt),
+        }
 
-# Expert checkpoints. Required by PPO_BC ctor but never invoked (collect_data=False).
-EXPERT_PATHS = {
-    "walk_forward":  MODELS_DIR / "experts" / "walk_forward",
-    "walk_backward": MODELS_DIR / "experts" / "walk_backward",
-    "hop_forward":   MODELS_DIR / "experts" / "hop_forward",
-    "body_tilt":     MODELS_DIR / "experts" / "body_tilt",
-}
-
-# =========================================
-
-
-def build_experts():
-    """Duplicated from train.py. Required by PPO_BC ctor; not actually polled
-    when collect_data=False, but the dict needs to be present and non-empty."""
-    walk_fwd = load_expert(EXPERT_PATHS["walk_forward"])
-    walk_bwd = load_expert(EXPERT_PATHS["walk_backward"])
-    hop_fwd  = load_expert(EXPERT_PATHS["hop_forward"])
-    tilt     = load_expert(EXPERT_PATHS["body_tilt"])
-
-    def walk_call(obs):
-        cmd_vel = obs[:, N_PROPRIO:N_PROPRIO + 1]
-        x = np.concatenate([obs[:, :N_PROPRIO], cmd_vel], axis=-1)
-        mask_fwd = cmd_vel[:, 0] >= 0
-        act = np.zeros((obs.shape[0], 4), dtype=np.float32)
-        if mask_fwd.any():
-            act[mask_fwd] = walk_fwd.predict(x[mask_fwd], deterministic=True)[0]
-        if (~mask_fwd).any():
-            act[~mask_fwd] = walk_bwd.predict(x[~mask_fwd], deterministic=True)[0]
-        return act
+    hop_fwd = load_expert(MODELS_DIR / cfg.expert_paths["hop_forward"])
 
     def flamingo_call(obs):
         zero = np.zeros((obs.shape[0], 1), dtype=obs.dtype)
-        x = np.concatenate([obs[:, :N_PROPRIO], zero], axis=-1)
+        x = np.concatenate([obs[:, :n_proprio], zero], axis=-1)
         return hop_fwd.predict(x, deterministic=True)[0]
 
-    def tilt_call(obs):
-        cmd_tilt = obs[:, N_PROPRIO + 1:N_PROPRIO + 2]
-        x = np.concatenate([obs[:, :N_PROPRIO], cmd_tilt], axis=-1)
-        return tilt.predict(x, deterministic=True)[0]
-
     return {
-        (1, 0, 0): walk_call,
-        (0, 1, 0): flamingo_call,
-        (0, 0, 1): tilt_call,
+        "walk_forward": _vel_call(walk_fwd),
+        "walk_backward": _vel_call(walk_bwd),
+        "flamingo": flamingo_call,
+        "tilt": _tilt_call(tilt),
     }
 
 
-def make_env():
+def make_env(cfg: PretrainCriticConfig):
+    # RlFTEnv subclasses ProprioObsWrapper internally, so we don't need to wrap
+    # the raw bipedal walker env in ProprioObsWrapper ourselves.
     env = gym.make("BipedalWalker-v3")
     env = Monitor(
         RlFTEnv(
             env,
-            ep_time=EP_TIME,
-            cmd_switching_time=CMD_SWITCHING_TIME,
-            task_switching_time=TASK_SWITCHING_TIME,
-            cmd_interp_speed=CMD_INTERP_SPEED,
-            cmd_sample_range=CMD_SAMPLE_RANGE,
-            cmd_sample_zero=CMD_SAMPLE_ZERO,
-            allowed_task_mixing=ALLOWED_TASK_MIXING,
-            use_rew_for_individual_tasks=True,
-            hull_x_range=HULL_X_RANGE,
+            ep_time=cfg.ep_time,
+            cmd_switching_time=cfg.cmd_switching_time,
+            task_switching_time=cfg.task_switching_time,
+            cmd_interp_speed=cfg.cmd_interp_speed,
+            cmd_sample_range=cfg.cmd_sample_range,
+            cmd_sample_zero=cfg.cmd_sample_zero,
+            allowed_task_mixing=cfg.allowed_task_mixing,
+            use_rew_for_individual_tasks=cfg.use_indv_task_rew,
+            hull_x_range=cfg.hull_x_range,
+            task_scheme=cfg.task_scheme,
         )
     )
     return env
@@ -159,13 +127,14 @@ def load_actor_only(model: PPO_BC, zip_path) -> None:
 
     PPO_BC.load reconstructs the source policy using *its own* saved
     policy_kwargs, so the source critic dims don't have to match the
-    destination's CRITIC_HIDDEN_DIMS. The actor dims do have to match — we
+    destination's critic_hidden_dims. The actor dims do have to match — we
     assert layer-by-layer.
     """
     src = PPO_BC.load(
         zip_path,
         experts=model.experts,
         task_bits=model.task_bits,
+        task_scheme=model.task_scheme,
         device="cpu",
     )
     src_sd = src.policy.state_dict()
@@ -177,25 +146,31 @@ def load_actor_only(model: PPO_BC, zip_path) -> None:
         if k in src_sd:
             assert dst_sd[k].shape == src_sd[k].shape, (
                 f"actor weight shape mismatch on {k}: dst {tuple(dst_sd[k].shape)} "
-                f"vs src {tuple(src_sd[k].shape)} — HIDDEN_DIMS must match the actor zip."
+                f"vs src {tuple(src_sd[k].shape)} — hidden_dims must match the actor zip."
             )
             dst_sd[k] = src_sd[k]
     model.policy.load_state_dict(dst_sd)
 
 
-def main():
-    assert LOAD_ACTOR_FROM.exists(), f"LOAD_ACTOR_FROM does not exist: {LOAD_ACTOR_FROM}"
+def main(cfg: PretrainCriticConfig):
+    assert cfg.load_actor_from, "cfg.load_actor_from is not set — point it at a PPO_BC zip."
+    actor_path = Path(MODELS_DIR / cfg.load_actor_from)
+    assert actor_path.exists(), f"load_actor_from does not exist: {actor_path}"
 
     print("Loading environments...")
-    train_env = SubprocVecEnv([make_env for _ in range(N_TRAIN_ENVS)])
+
+    # bind cfg into the env factory so SubprocVecEnv workers (spawned, not forked)
+    # reconstruct the same config without relying on module globals.
+    env_fn = partial(make_env, cfg)
+    train_env = SubprocVecEnv([env_fn for _ in range(cfg.n_train_envs)])
 
     print("Loading experts (ctor requirement only; not polled)...")
-    experts = build_experts()
+    experts = build_experts(cfg)
 
     policy_kwargs = dict(
-        hidden_dims=HIDDEN_DIMS,
-        critic_hidden_dims=CRITIC_HIDDEN_DIMS,
-        activation_fn=ACTIVATION_FN,
+        hidden_dims=list(cfg.hidden_dims),
+        critic_hidden_dims=list(cfg.critic_hidden_dims),
+        activation_fn=cfg.activation_fn,
     )
 
     # Fresh PPO_BC. collect_data=False disables DAgger relabeling + dataset
@@ -204,27 +179,28 @@ def main():
         PpoBcPolicy,
         train_env,
         experts=experts,
-        task_bits=TASK_BITS,
-        act_var_floor=ACT_VAR_FLOOR,
+        task_bits=cfg.task_bits,
+        task_scheme=cfg.task_scheme,
+        act_var_floor=cfg.act_var_floor,
         bc_coef=0.0,
         collect_data=False,
         verbose=0,
-        learning_rate=PRETRAIN_LR,
-        n_epochs=PRETRAIN_N_EPOCHS,
-        n_steps=PRETRAIN_N_STEPS,
-        batch_size=PRETRAIN_BATCH_SIZE,
-        ent_coef=PRETRAIN_ENT_COEF,
-        vf_coef=PRETRAIN_VF_COEF,
-        gamma=GAMMA,
-        gae_lambda=GAE_LAMBDA,
-        clip_range=CLIP_RANGE,
-        max_grad_norm=MAX_GRAD_NORM,
+        learning_rate=cfg.learning_rate,
+        n_epochs=cfg.n_epochs,
+        n_steps=cfg.n_steps,
+        batch_size=cfg.batch_size,
+        ent_coef=cfg.ent_coef,
+        vf_coef=cfg.vf_coef,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
+        clip_range=cfg.clip_range,
+        max_grad_norm=cfg.max_grad_norm,
         policy_kwargs=policy_kwargs,
-        device=DEVICE,
+        device=cfg.device,
     )
 
-    print(f"Loading actor weights from {LOAD_ACTOR_FROM}...")
-    load_actor_only(model, LOAD_ACTOR_FROM)
+    print(f"Loading actor weights from {actor_path}...")
+    load_actor_only(model, actor_path)
 
     # Freeze actor + action head + log_std so only the critic learns.
     for p in model.policy.mlp_extractor.policy_net.parameters():
@@ -232,49 +208,52 @@ def main():
     for p in model.policy.action_net.parameters():
         p.requires_grad_(False)
     with torch.no_grad():
-        model.policy.log_std.fill_(PRETRAIN_INIT_LOG_STD)
+        model.policy.log_std.fill_(cfg.init_log_std)
     model.policy.log_std.requires_grad_(False)
 
-    model.set_logger(configure(str(LOGS_DIR / EXPERIMENT_NAME), ["tensorboard"]))
+    model.set_logger(configure(str(LOGS_DIR / cfg.experiment_name), ["tensorboard"]))
     train_env.reset()
 
     ckpt_cb = CheckpointCallback(
         save_freq=max(500000 // train_env.num_envs, 1),
-        save_path=f"{MODELS_DIR}/{EXPERIMENT_NAME}/",
+        save_path=f"{MODELS_DIR}/{cfg.experiment_name}/",
     )
 
-    print_run_info(train_env, model, EXPERIMENT_NAME)
+    print_run_info(cfg, train_env, model)
 
-    print(f"Starting critic pretraining ({TIMESTEPS:,} timesteps)...")
+    print(f"Starting critic pretraining ({cfg.timesteps:,} timesteps)...")
     start = time.time()
     model.learn(
-        total_timesteps=TIMESTEPS,
+        total_timesteps=cfg.timesteps,
         reset_num_timesteps=False,
         callback=CallbackList([StandardTBCallback(), RewardTermLogger(), ckpt_cb]),
         progress_bar=True,
     )
 
-    final_path = f"{MODELS_DIR}/{EXPERIMENT_NAME}/final.zip"
+    final_path = f"{MODELS_DIR}/{cfg.experiment_name}/final.zip"
     model.save(final_path)
     print(f"Saved final model to {final_path}")
 
     duration = fmt_duration(time.time() - start)
     print(f"Done! Total time: {duration}")
-    print(f"Experiment name: {EXPERIMENT_NAME}")
+    print(f"Experiment name: {cfg.experiment_name}")
 
     try:
         subprocess.run(
             [
-                "osascript", "-e",
-                f'display notification "Finished in {duration}" with title "Critic pretrain complete" subtitle "{EXPERIMENT_NAME}"',
+                "osascript",
+                "-e",
+                f'display notification "Finished in {duration}" with title "Critic pretrain complete" subtitle "{cfg.experiment_name}"',
             ],
             check=False,
         )
     except FileNotFoundError:
-        pass
+        pass  # not on macOS
 
 
-def print_run_info(env, model, experiment_name):
+def print_run_info(cfg: PretrainCriticConfig, env, model):
+    """Echo the full resolved config (+ the actually-built model/env) so a run's
+    settings can be eyeballed before training — note the actor is frozen."""
     env_id = env.get_attr("spec")[0].id
     obs = env.observation_space
     act = env.action_space
@@ -286,55 +265,118 @@ def print_run_info(env, model, experiment_name):
         for line in lines:
             print(f"    {line}")
 
+    def task_name(t) -> str:
+        name = getattr(t, "name", None)
+        if name is not None:
+            return name
+        bits = tuple(int(x) for x in t)
+        return "+".join(p for b, p in zip(bits, ("walk", "flamingo", "tilt")) if b) or "idle"
+
+    def lr_desc(lr) -> str:
+        # schedules take progress_remaining in [0, 1]: 1.0 = start, 0.0 = end.
+        if callable(lr):
+            return f"sched {lr(1.0):.1e} -> {lr(0.0):.1e}"
+        return f"{lr:.1e}"
+
+    def switch_desc(t: float) -> str:
+        return f"{t}s" if t < cfg.ep_time else f"{t}s (off, >= ep_time)"
+
     print(f"\n{'=' * 44}")
-    print(f"  critic_pretrain  {experiment_name}")
-    print(f"  frozen actor     {LOAD_ACTOR_FROM}")
+    print(f"  critic_pretrain  {cfg.experiment_name}")
+    print(f"  timesteps        {cfg.timesteps:,}")
+    print(f"  frozen actor     {cfg.load_actor_from}")
     print(f"  Note: actor is frozen; only the value network trains.")
     print(f"{'=' * 44}")
 
+    cmd_vel_sw, cmd_tilt_sw = cfg.cmd_switching_time
     section(
         "environment",
         [
-            f"{env.num_envs}x  {env_id}",
-            f"obs  {obs.shape}  {obs.dtype}",
-            f"act  {act.shape}  [{act.low[0]:.1f}, {act.high[0]:.1f}]",
-            f"task mixings     {ALLOWED_TASK_MIXING}",
+            f"train envs          {cfg.n_train_envs}",
+            f"env                 {env_id}",
+            f"obs                 {obs.shape}  {obs.dtype}",
+            f"act                 {act.shape}  [{act.low[0]:.1f}, {act.high[0]:.1f}]",
+            f"ep_time             {cfg.ep_time}s",
+            f"cmd_switch vel/tilt {switch_desc(cmd_vel_sw)} / {switch_desc(cmd_tilt_sw)}",
+            f"task_switch         {switch_desc(cfg.task_switching_time)}",
+            f"cmd_range vel/tilt  {cfg.cmd_sample_range[0]} / {cfg.cmd_sample_range[1]}",
+            f"cmd_zero_p vel/tilt {cfg.cmd_sample_zero[0]} / {cfg.cmd_sample_zero[1]}",
+            f"cmd_interp vel/tilt {cfg.cmd_interp_speed[0]} / {cfg.cmd_interp_speed[1]}",
+            f"hull_x_range        {cfg.hull_x_range}",
         ],
     )
 
     section(
-        "policy",
+        "task / reward",
         [
-            f"device            {model.device}",
-            f"n_steps           {model.n_steps}",
-            f"batch_size        {model.batch_size}",
-            f"n_epochs          {model.n_epochs}",
-            f"gamma             {model.gamma}",
-            f"lambda            {model.gae_lambda}",
-            f"vf_coef           {model.vf_coef}",
-            f"ent_coef          {model.ent_coef}",
-            f"lr                {model.learning_rate}",
-            f"init_log_std      {PRETRAIN_INIT_LOG_STD:.4f}",
-            f"collect_data      {model.collect_data}",
+            f"tasks               {', '.join(task_name(t) for t in cfg.allowed_task_mixing)}",
+            f"use_indv_task_rew   {cfg.use_indv_task_rew}",
         ],
     )
 
+    buffer = cfg.n_steps * cfg.n_train_envs
+    section(
+        "ppo",
+        [
+            f"device              {cfg.device}",
+            f"lr                  {lr_desc(cfg.learning_rate)}",
+            f"n_steps x n_envs    {cfg.n_steps} x {cfg.n_train_envs} = {buffer:,}",
+            f"batch_size          {cfg.batch_size}  ({buffer % cfg.batch_size} remainder)",
+            f"n_epochs            {cfg.n_epochs}",
+            f"gamma / lambda      {cfg.gamma} / {cfg.gae_lambda}",
+            f"clip_range          {cfg.clip_range}",
+            f"vf_coef / ent_coef  {cfg.vf_coef} / {cfg.ent_coef}",
+            f"max_grad_norm       {cfg.max_grad_norm}",
+            f"collect_data        {model.collect_data}",
+        ],
+    )
+
+    # extract layer sizes from mlp_extractor
     def net_summary(net):
-        return " -> ".join(str(l.out_features) for l in net if hasattr(l, "out_features"))
+        sizes = [str(l.out_features) for l in net if hasattr(l, "out_features")]
+        return " -> ".join(sizes)
 
     actor = net_summary(p.mlp_extractor.policy_net)
     critic = net_summary(p.mlp_extractor.value_net)
     act_out = p.action_net.out_features
+    std = (
+        f"{torch.exp(p.log_std).mean().item():.3f}" if hasattr(p, "log_std") else "n/a"
+    )
     section(
         "network",
         [
             f"actor  (frozen)  in -> {actor} -> {act_out}",
             f"critic (train)   in -> {critic} -> 1",
+            f"activation          {cfg.activation_fn.__name__}",
+            f"action std (init)   {std}",
+        ],
+    )
+
+    section(
+        "warm-start",
+        [
+            f"load_actor_from     {cfg.load_actor_from}",
+            f"init_log_std        {cfg.init_log_std}",
         ],
     )
 
     print(f"\n{'=' * 44}\n")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Pretrain a PPO_BC critic from a named preset (actor frozen)."
+    )
+    parser.add_argument(
+        "preset",
+        choices=sorted(PRESETS.keys()),
+        help="which pretrain_critic_config preset to run",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    cfg = PRESETS[args.preset]
+    print(f"Using preset: {args.preset}  ->  experiment {cfg.experiment_name}")
+    main(cfg)

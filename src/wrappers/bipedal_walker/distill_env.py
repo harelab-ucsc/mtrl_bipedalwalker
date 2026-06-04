@@ -66,23 +66,21 @@ class DistillEnv(ProprioObsWrapper):
         self._vel_switch_steps: int = self._max_steps
         self._vel_sample_range: tuple[float, float] = (0.0, 0.0)
         self._vel_sample_zero: float = 0.0
-        self._max_vel_buf_size: int = 1
+        self._cmd_vel_interp_step: float = 5.0 / self._FPS  # max per-step tracking delta
 
         # runtime cmd vel state
         self._cmd_vel: float = 0.0
         self._cmd_vel_target: float = 0.0
-        self._cmd_vel_buf: list[float] = [0.0]  # smooth out transitions
 
         # cmd tilt — configurable via config_cmd_tilt
         self._tilt_switch_steps: int = self._max_steps
         self._tilt_sample_range: tuple[float, float] = (0.0, 0.0)
         self._tilt_sample_zero: float = 0.0
-        self._max_tilt_buf_size: int = 1
+        self._cmd_tilt_interp_step: float = 1.0 / self._FPS  # max per-step tracking delta
 
         # runtime cmd tilt state
         self._cmd_tilt: float = 0.0
         self._cmd_tilt_target: float = 0.0
-        self._cmd_tilt_buf: list[float] = [0.0]  # smooth out transitions
 
         # tasks (purely cosmetic)
         self._task_names = task_names
@@ -148,7 +146,7 @@ class DistillEnv(ProprioObsWrapper):
         self,
         sample_range: tuple[float, float] = (-2.5, 2.5),
         switch_time: float = 5.0,
-        interp_time: float = 1.0,
+        interp_speed: float = 5.0,
         zero_prob: float = 0.15,
     ):
         """Configure command velocity sampling and switching behaviour.
@@ -159,22 +157,22 @@ class DistillEnv(ProprioObsWrapper):
             switch_time: How often (seconds) a new target velocity is sampled.
                 Set to ep_time or higher to keep velocity constant per episode.
                 Default: 5.0.
-            interp_time: Window length (seconds) over which velocity transitions are
-                smoothed via a rolling mean. 0.0 means instantaneous switching.
-                Default: 1.0.
+            interp_speed: Max rate (units/sec) at which the live command tracks the
+                target; clamped per step to interp_speed/FPS. Higher = snappier.
+                Default: 5.0.
             zero_prob: Probability [0, 1] of sampling exactly 0 instead of drawing
                 from sample_range. Default: 0.2.
         """
         self._vel_sample_range = sample_range
         self._vel_switch_steps = max(int(switch_time * self._FPS), 1)
-        self._max_vel_buf_size = max(int(interp_time * self._FPS), 1)
+        self._cmd_vel_interp_step = interp_speed / self._FPS
         self._vel_sample_zero = zero_prob
 
     def config_cmd_tilt(
         self,
         sample_range: tuple[float, float] = (-0.75, 0.75),
         switch_time: float = 10.0,
-        interp_time: float = 1.0,
+        interp_speed: float = 1.0,
         zero_prob: float = 0.15,
     ):
         """Configure command tilt sampling and switching behaviour.
@@ -185,15 +183,15 @@ class DistillEnv(ProprioObsWrapper):
             switch_time: How often (seconds) a new target tilt is sampled.
                 Set to ep_time or higher to keep tilt constant per episode.
                 Default: 10.0.
-            interp_time: Window length (seconds) over which tilt transitions are
-                smoothed via a rolling mean. 0.0 means instantaneous switching.
+            interp_speed: Max rate (units/sec) at which the live command tracks the
+                target; clamped per step to interp_speed/FPS. Higher = snappier.
                 Default: 1.0.
             zero_prob: Probability [0, 1] of sampling exactly 0 instead of drawing
                 from sample_range. Default: 0.15.
         """
         self._tilt_sample_range = sample_range
         self._tilt_switch_steps = max(int(switch_time * self._FPS), 1)
-        self._max_tilt_buf_size = max(int(interp_time * self._FPS), 1)
+        self._cmd_tilt_interp_step = interp_speed / self._FPS
         self._tilt_sample_zero = zero_prob
 
     def set_active_tasks(self, task_one_hot: list[int] | None):
@@ -226,14 +224,11 @@ class DistillEnv(ProprioObsWrapper):
             else:
                 self._cmd_vel_target = 0.0
 
-        # push the target command to the buf
-        self._cmd_vel_buf.append(self._cmd_vel_target)
-        if len(self._cmd_vel_buf) > self._max_vel_buf_size:
-            # trim front
-            self._cmd_vel_buf.pop(0)
-
-        # update cmd vel
-        self._cmd_vel = float(np.mean(self._cmd_vel_buf))
+        # track the target with a per-step slew-rate clamp
+        delta_vel = self._cmd_vel_target - self._cmd_vel
+        self._cmd_vel += float(
+            np.clip(delta_vel, -self._cmd_vel_interp_step, self._cmd_vel_interp_step)
+        )
 
         # change command tilt if specified
         if (
@@ -245,14 +240,11 @@ class DistillEnv(ProprioObsWrapper):
             else:
                 self._cmd_tilt_target = 0.0
 
-        # push the target tilt to the buf
-        self._cmd_tilt_buf.append(self._cmd_tilt_target)
-        if len(self._cmd_tilt_buf) > self._max_tilt_buf_size:
-            # trim front
-            self._cmd_tilt_buf.pop(0)
-
-        # update cmd tilt
-        self._cmd_tilt = float(np.mean(self._cmd_tilt_buf))
+        # track the target with a per-step slew-rate clamp
+        delta_tilt = self._cmd_tilt_target - self._cmd_tilt
+        self._cmd_tilt += float(
+            np.clip(delta_tilt, -self._cmd_tilt_interp_step, self._cmd_tilt_interp_step)
+        )
 
         info["cmd"] = {
             "x_vel": self._cmd_vel,
@@ -408,8 +400,7 @@ class DistillEnv(ProprioObsWrapper):
         else:
             self._cmd_vel = 0.0
 
-        self._cmd_vel_target = self._cmd_vel  # reset target
-        self._cmd_vel_buf = [self._cmd_vel]  # reset buffer
+        self._cmd_vel_target = self._cmd_vel  # live starts at target (no startup lag)
 
         # resample command tilt
         if self._rng.random() > self._tilt_sample_zero:
@@ -417,8 +408,7 @@ class DistillEnv(ProprioObsWrapper):
         else:
             self._cmd_tilt = 0.0
 
-        self._cmd_tilt_target = self._cmd_tilt  # reset target
-        self._cmd_tilt_buf = [self._cmd_tilt]  # reset buffer
+        self._cmd_tilt_target = self._cmd_tilt  # live starts at target (no startup lag)
 
         env: Any = self.unwrapped
         hull = env.hull

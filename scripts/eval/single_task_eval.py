@@ -9,8 +9,10 @@ each (model, task) it runs many fixed-length episodes inside the PPO_BC env
   1. Time alive          — mean +/- std survival per episode (frames and seconds).
   2. Success rate        — fraction of episodes that survive the full episode window.
   3. Behavioral quality  — the RLFT modular reward, broken down per component
-                           (stability + per-task tracking/gait terms), polled live
-                           from ``info["reward_terms"]`` and averaged per step.
+                           (regularization + per-task track_vel/track_ang/track_gait
+                           terms), polled live from ``info["reward_terms"]`` and averaged
+                           per step. The single track_gait term is split eval-side into
+                           walk / hop / quiet by the active gait mode (see _gait_mode).
 
 Every model kind is driven through a uniform ``predict(obs_19) -> action_4`` over the
 shared 19-dim RlFTEnv observation ``[14 proprio, cmd_vel, cmd_tilt, walk, flamingo, tilt]``:
@@ -44,8 +46,7 @@ ranges, model list, ...) lives in a YAML under scripts/eval/configs/. Structural
 constants (FPS, the four tasks, reward component grouping) and machine knobs
 (N_WORKERS, PROGRESS_EVERY) stay in this file. Pick a config on the command line:
 
-    python scripts/eval/singletask_eval.py            # configs/default.yaml
-    python scripts/eval/singletask_eval.py smoke      # configs/smoke.yaml (by name)
+    python scripts/eval/singletask_eval.py singletask_default   # the template, by name
     python scripts/eval/singletask_eval.py path/to/custom.yaml
 """
 
@@ -73,21 +74,25 @@ from utils.paths import MODELS_DIR
 from wrappers.ppo_bc.ppo_bc_env import RlFTEnv
 from mdp.bipedal_walker.student import StudentModel
 from mdp.bipedal_walker.hybrid import HybridModelV2
+from mdp.bipedal_walker.tasks import GAIT, reward_mode
 
 # =========================================
 # config
 #
 # Structural constants and machine knobs live here; the per-experiment config
-# (run name, episode length, episodes, command ranges, model list) is loaded
-# from a YAML under scripts/eval/configs/ into an EvalConfig — see load_config.
+# (run name, scheme, episode length, episodes, tasks/command ranges, model list)
+# is loaded from a YAML under scripts/eval/configs/ into an EvalConfig — see
+# load_config.
 
 FPS = 50  # env step rate, fixed by BipedalWalker-v3
 
-# --- the four individual tasks (codebase convention) ---
-TASKS = ["walk_forward", "walk_backward", "flamingo", "tilt"]
+# --- the four individual tasks (legacy onehot scheme) ---
+# Under the gait scheme the task list comes from the config's `tasks` units; this
+# fallback is only used when task_scheme == "onehot".
+ONEHOT_TASKS = ["walk_forward", "walk_backward", "flamingo", "tilt"]
 
 # --- machine / cosmetic knobs (not part of an experiment definition) ---
-N_WORKERS = 14 * 2
+N_WORKERS = int(14 * 1.5)
 PROGRESS_EVERY = 10  # episodes between progress pings
 
 # --- output location + where named YAML configs live ---
@@ -112,14 +117,43 @@ class EvalConfig:
     episodes_per_task: int
     episode_chunk: int  # episodes per pool job (load balancing)
     seed_base: int  # episode i uses the same seed across models
+    # obs-bit scheme ("gait" default, "onehot" legacy). Drives task list, command
+    # sampling, gait-mode bucketing, env construction, and HybridModelV2 routing.
+    task_scheme: str
     cmd_vel_forward_range: tuple[float, float]
     cmd_vel_backward_range: tuple[float, float]
     cmd_tilt_range: tuple[float, float]
     only_models: list[str] | None  # subset of model names to run, or None for all
+    date_suffix: bool  # append a timestamp to the output directory name
+    # Per-task gait units (gait scheme only): each a {name, label, gait_bits (3-tuple),
+    # cmd_vel_range, cmd_tilt_range} dict parsed from the YAML `tasks` block. Empty
+    # under onehot (the hardcoded ONEHOT_TASKS / sample_command path is used instead).
+    tasks: tuple[dict, ...]
     # Each model dict: name, kind ("sb3"|"torch"|"hybrid"), ref (checkpoint path
     # relative to models/, None for hybrid — the *latest* checkpoint, never
     # best/best_model.zip), desc (shown in models.md / meta.json).
     models: list[dict]
+
+    @property
+    def task_names(self) -> list[str]:
+        """The task ids to evaluate: the config units under gait, the hardcoded
+        four-task list under onehot."""
+        if self.task_scheme == GAIT:
+            return [t["name"] for t in self.tasks]
+        return list(ONEHOT_TASKS)
+
+    @property
+    def label_by_task(self) -> dict[str, str]:
+        """Display label per task id (gait units carry an explicit label; onehot
+        tasks display under their own name)."""
+        if self.task_scheme == GAIT:
+            return {t["name"]: t["label"] for t in self.tasks}
+        return {t: t for t in ONEHOT_TASKS}
+
+    @property
+    def unit_by_task(self) -> dict[str, dict]:
+        """Gait unit (gait_bits + command ranges) per task id; empty under onehot."""
+        return {t["name"]: t for t in self.tasks}
 
     # --- derived (frames; depend on FPS) ---
     @property
@@ -135,9 +169,50 @@ class EvalConfig:
         return self.modulate_period * FPS  # re-sampling period in frames
 
 
+def parse_gait_tasks(raw: list) -> tuple[dict, ...]:
+    """Parse + validate a YAML ``tasks`` block (gait scheme) into task-unit dicts.
+
+    Each unit: ``{name, label, gait: [two_leg, one_leg], cmd_vel_range,
+    cmd_tilt_range}`` → ``{name, label, gait_bits (3-tuple (two_leg, one_leg, 0)),
+    cmd_vel_range (tuple), cmd_tilt_range (tuple)}``. Fails fast on a missing name,
+    a duplicate name, or a malformed 2-element gait. ``label`` defaults to ``name``."""
+    if not raw:
+        raise ValueError("gait scheme requires a non-empty 'tasks' list")
+    units: list[dict] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(raw):
+        name = entry.get("name")
+        if not name:
+            raise ValueError(f"tasks[{i}]: missing 'name'")
+        if name in seen:
+            raise ValueError(f"tasks: duplicate name {name!r}")
+        seen.add(name)
+        gait = entry.get("gait")
+        if not (
+            isinstance(gait, (list, tuple))
+            and len(gait) == 2
+            and all(g in (0, 1) for g in gait)
+        ):
+            raise ValueError(f"{name}: gait must be a length-2 list of 0/1, got {gait!r}")
+        units.append(
+            {
+                "name": name,
+                "label": entry.get("label", name),
+                "gait_bits": (int(gait[0]), int(gait[1]), 0),
+                "cmd_vel_range": tuple(entry["cmd_vel_range"]),
+                "cmd_tilt_range": tuple(entry["cmd_tilt_range"]),
+            }
+        )
+    return tuple(units)
+
+
 def load_config(name_or_path: str) -> EvalConfig:
     """Load an EvalConfig from YAML. ``name_or_path`` is either a path to a
-    .yaml/.yml file, or a bare name resolved to scripts/eval/configs/<name>.yaml."""
+    .yaml/.yml file, or a bare name resolved to scripts/eval/configs/<name>.yaml.
+
+    ``task_scheme`` defaults to "gait"; gait configs supply a ``tasks`` list of
+    gait units (see parse_gait_tasks). Onehot configs keep the legacy command-range
+    fields and the hardcoded four-task list."""
     p = Path(name_or_path)
     if p.suffix.lower() not in (".yaml", ".yml"):
         p = CONFIG_DIR / f"{name_or_path}.yaml"
@@ -145,6 +220,10 @@ def load_config(name_or_path: str) -> EvalConfig:
         raise FileNotFoundError(f"eval config not found: {p}")
     with open(p) as f:
         raw = yaml.safe_load(f)
+    scheme = raw.get("task_scheme", GAIT)
+    tasks = parse_gait_tasks(raw["tasks"]) if scheme == GAIT else ()
+    # onehot keeps the legacy global command ranges; gait carries them per-unit
+    # (the module-level defaults below just keep the dataclass populated).
     return EvalConfig(
         eval_name=raw["eval_name"],
         ep_time=int(raw["ep_time"]),
@@ -152,10 +231,13 @@ def load_config(name_or_path: str) -> EvalConfig:
         episodes_per_task=int(raw["episodes_per_task"]),
         episode_chunk=int(raw["episode_chunk"]),
         seed_base=int(raw["seed_base"]),
-        cmd_vel_forward_range=tuple(raw["cmd_vel_forward_range"]),
-        cmd_vel_backward_range=tuple(raw["cmd_vel_backward_range"]),
-        cmd_tilt_range=tuple(raw["cmd_tilt_range"]),
+        task_scheme=scheme,
+        cmd_vel_forward_range=tuple(raw.get("cmd_vel_forward_range", (0.0, 5.0))),
+        cmd_vel_backward_range=tuple(raw.get("cmd_vel_backward_range", (-5.0, 0.0))),
+        cmd_tilt_range=tuple(raw.get("cmd_tilt_range", (-0.75, 0.75))),
         only_models=raw.get("only_models"),
+        date_suffix=bool(raw.get("date_suffix", True)),
+        tasks=tasks,
         models=raw["models"],
     )
 
@@ -165,34 +247,46 @@ def load_config(name_or_path: str) -> EvalConfig:
 # (typed as EvalConfig since every read happens after it's set).
 CFG: EvalConfig = None  # type: ignore[assignment]
 
-# Stable display order for the modular reward components (union across tasks), each
-# tagged with the task group(s) it scores so it's clear which task a term belongs to.
-# Stability terms are always on (every task), so they list all three; the rest are
-# task-specific. Components absent for a given task simply don't appear for that task's
-# rows/charts. ``COMPONENT_GROUPS`` is the single source of truth for both order and
-# grouping; the group label is surfaced in the per-task charts and meta.json.
+# The task ids to evaluate, in order. Resolved from CFG (config units under gait,
+# the hardcoded four-task list under onehot) and set alongside CFG in main() /
+# _init_worker so the many call sites that iterate it stay thin.
+TASKS: list[str] = []
+
+# Stable display order for the modular reward components, each tagged with the task
+# it scores so it's clear which task a term belongs to. The reward (rl_finetune_rewards.py)
+# uses a CONSTANT term set: every task emits the same regularization terms (always-on
+# smoothness/safety) plus the three task-tracking channels (track_vel/track_ang/track_gait),
+# only the task-conditioned targets move. The single track_gait term is split here, eval-side,
+# into walk / hop / quiet by the active gait mode (see ``_gait_mode``) so walk-gait and
+# hop are visible separately rather than blended. ``COMPONENT_GROUPS`` is the single
+# source of truth for both order and grouping; the group label is surfaced in the per-task
+# charts and meta.json. Components absent for a given task simply don't appear for its rows/charts.
 COMPONENT_GROUPS: dict[str, str] = {
-    # stability — always on, applies to every task
-    "hull_ang_vel": "stability",
-    "joint_vel_l2": "stability",
-    "body_height": "stability",
-    "termination": "stability",
-    # velocity tracking (walk)
-    "vel_tracking": "walk",
-    "vel_tracking_fine": "walk",
-    "vel_jerk": "walk",
-    # walk gait
-    "leg_alt_bonus": "walk",
-    "hopping_penalty": "walk",
-    # tilt tracking
-    "hull_ang_tracking": "tilt",
-    "hull_ang_tracking_fine": "tilt",
-    # flamingo gait
-    "leg_alt_penalty": "flamingo",
-    "hopping_bonus": "flamingo",
-    "both_leg_contact": "flamingo",
+    # regularization — always on, applies to every task
+    "reg_hull_ang_vel": "regularization",
+    "reg_joint_vel_l2": "regularization",
+    "reg_vel_jerk": "regularization",
+    "reg_body_height": "regularization",
+    "alive": "regularization",
+    "termination": "regularization",
+    # task tracking — always on with task-conditioned targets
+    "track_vel": "walk",  # velocity tracking
+    "track_ang": "tilt",  # hull-angle tracking
+    "track_gait_walk": "walk",  # leg alternation
+    "track_gait_hop": "hop",  # single-leg hops (legacy flamingo)
+    "track_gait_quiet": "tilt",  # both feet planted (tilt / idle)
+    "hop_both_down": "hop",  # both-feet-down penalty while in hop mode
 }
 COMPONENT_ORDER = list(COMPONENT_GROUPS)
+
+
+def _gait_mode(task_bits, cmd_vel: float) -> str:
+    """The active gait mode (``walk`` | ``hop`` | ``quiet``) for a segment, via the
+    scheme-aware ``tasks.reward_mode``. Used to split the reward's single
+    ``track_gait`` term into a mode-specific component (so walk-gait and hop read
+    separately). Needs the segment's cmd_vel because under gait a stationary two-leg
+    task (tilt / stand) buckets as quiet."""
+    return reward_mode(task_bits, cmd_vel, CFG.task_scheme)
 
 # =========================================
 # model + path resolution
@@ -238,7 +332,7 @@ def make_predict_fn(kind: str, path: str | None):
         return predict
 
     if kind == "hybrid":
-        model = HybridModelV2()
+        model = HybridModelV2(scheme=CFG.task_scheme)
 
         def predict(obs):
             with torch.no_grad():
@@ -255,18 +349,30 @@ def make_predict_fn(kind: str, path: str | None):
 
 def make_eval_env() -> RlFTEnv:
     """Single RlFTEnv driven manually (no internal resampling), with task-specific
-    rewards enabled so individual tasks produce a meaningful modular reward."""
+    rewards enabled so individual tasks produce a meaningful modular reward. The
+    scheme matches the config so the manual obs-tail injection reads the bits
+    correctly (gait passes commands through; onehot masks them)."""
     return RlFTEnv(
         make("BipedalWalker-v3", render_mode=None),
         ep_time=CFG.env_ep_time,
         use_rew_for_individual_tasks=True,
         manual_ctrl_mode=True,
+        task_scheme=CFG.task_scheme,
     )
 
 
 def sample_command(task: str, rng: np.random.Generator):
-    """Return ``(task_bits, cmd_vel, cmd_tilt)`` for a task. Walk direction is the
-    velocity sign (>= 0 -> forward). Flamingo has no command; tilt commands an angle."""
+    """Return ``(task_bits, cmd_vel, cmd_tilt)`` for a task.
+
+    Gait: read the task's unit — sample cmd_vel ~ U(cmd_vel_range) and
+    cmd_tilt ~ U(cmd_tilt_range) (a degenerate (0,0) range pins the command to 0),
+    and write the unit's gait_bits. Onehot (legacy): walk direction is the velocity
+    sign (>= 0 -> forward); flamingo has no command; tilt commands an angle."""
+    if CFG.task_scheme == GAIT:
+        unit = CFG.unit_by_task[task]
+        vel = float(rng.uniform(*unit["cmd_vel_range"]))
+        tilt = float(rng.uniform(*unit["cmd_tilt_range"]))
+        return unit["gait_bits"], vel, tilt
     if task == "walk_forward":
         return (1, 0, 0), float(rng.uniform(*CFG.cmd_vel_forward_range)), 0.0
     if task == "walk_backward":
@@ -280,7 +386,7 @@ def sample_command(task: str, rng: np.random.Generator):
 
 def build_schedule(task: str, rng: np.random.Generator):
     """Hold one task for CFG.episode_len frames, re-sampling its command every
-    CFG.modulate_every frames (a no-op for flamingo, which has no command)."""
+    CFG.modulate_every frames (a no-op for a task whose command ranges are all 0)."""
     segs = []
     remaining = CFG.episode_len
     while remaining > 0:
@@ -311,11 +417,15 @@ def run_episode(env: RlFTEnv, predict, schedule, seed: int) -> dict:
         env._cmd_vec_target = (vel, tilt)
         # rebuild the trailing cmd+task obs slots for the new segment
         obs = env._derive_full_obs(obs[:-5], env._effective_cmd_vec(), bits)
+        # split track_gait by this segment's gait mode (scheme + cmd_vel aware)
+        gait_key = f"track_gait_{_gait_mode(bits, vel)}"
         for _ in range(n_steps):
             action = predict(obs)
             obs, rew, term, _trunc, info = env.step(action)
             total_reward += float(rew)
             for k, v in info["reward_terms"].items():
+                if k == "track_gait":
+                    k = gait_key
                 comp_sum[k] = comp_sum.get(k, 0.0) + float(v)
             step += 1
             if term:
@@ -363,10 +473,11 @@ def _merge_agg(dst: dict, src: dict) -> None:
 
 def _init_worker(cfg: EvalConfig) -> None:
     """Pool initializer: runs once per worker. macOS 'spawn' re-imports this module
-    in each worker (so module-level CFG is reset to None) and does not inherit
-    main()'s state — so we ship the loaded config in here and pin torch to 1 thread."""
-    global CFG
+    in each worker (so module-level CFG/TASKS reset) and does not inherit main()'s
+    state — so we ship the loaded config in here and pin torch to 1 thread."""
+    global CFG, TASKS
     CFG = cfg
+    TASKS = cfg.task_names
     torch.set_num_threads(1)
 
 
@@ -488,12 +599,16 @@ def _print_model_list(entries):
 def _print_report(entries, results):
     names = [e["name"] for e in entries]
     nw = max((len(n) for n in names), default=5)
+    # header columns show each task's display label (gait units carry one); CSV /
+    # meta keep keying on the raw task id.
+    labels = CFG.label_by_task
+    cols = [labels[t] for t in TASKS] + ["overall"]
 
     def hdr(title):
         print(f"\n{title}\n{'=' * len(title)}")
 
     hdr("Time alive — mean seconds (std)")
-    print(f"{'model':<{nw}}  " + "  ".join(f"{t:>16}" for t in TASKS + ["overall"]))
+    print(f"{'model':<{nw}}  " + "  ".join(f"{t:>16}" for t in cols))
     for n in names:
         r = results[n]
         cells = [
@@ -504,7 +619,7 @@ def _print_report(entries, results):
         print(f"{n:<{nw}}  " + "  ".join(f"{c:>16}" for c in cells))
 
     hdr("Success rate (%)")
-    print(f"{'model':<{nw}}  " + "  ".join(f"{t:>14}" for t in TASKS + ["overall"]))
+    print(f"{'model':<{nw}}  " + "  ".join(f"{t:>14}" for t in cols))
     for n in names:
         r = results[n]
         cells = [f"{r['per_task'][t]['success_rate'] * 100:>13.1f}%" for t in TASKS]
@@ -512,7 +627,7 @@ def _print_report(entries, results):
         print(f"{n:<{nw}}  " + "  ".join(cells))
 
     hdr("Behavioral quality — mean per-step reward")
-    print(f"{'model':<{nw}}  " + "  ".join(f"{t:>14}" for t in TASKS + ["overall"]))
+    print(f"{'model':<{nw}}  " + "  ".join(f"{t:>14}" for t in cols))
     for n in names:
         r = results[n]
         cells = [f"{r['per_task'][t]['avg_per_step_reward']:>14.3f}" for t in TASKS]
@@ -557,13 +672,17 @@ def _grouped_bar(ax, group_labels, series, ylabel, title, errors=None):
 
 def _write_charts(entries, results, out_dir):
     names = [e["name"] for e in entries]
+    # x-axis tick labels use each task's display label (gait units carry one);
+    # per-task chart filenames stay keyed on the raw task id.
+    labels = CFG.label_by_task
+    task_labels = [labels[t] for t in TASKS]
     written = []
 
     # 1) time alive (seconds, with std error bars)
     fig, ax = plt.subplots(figsize=(max(8, 1.6 * len(TASKS)), 5))
     _grouped_bar(
         ax,
-        TASKS,
+        task_labels,
         {
             n: [results[n]["per_task"][t]["alive_mean_sec"] for t in TASKS]
             for n in names
@@ -585,7 +704,7 @@ def _write_charts(entries, results, out_dir):
     fig, ax = plt.subplots(figsize=(max(8, 1.6 * len(TASKS)), 5))
     _grouped_bar(
         ax,
-        TASKS,
+        task_labels,
         {
             n: [results[n]["per_task"][t]["success_rate"] * 100 for t in TASKS]
             for n in names
@@ -604,7 +723,7 @@ def _write_charts(entries, results, out_dir):
     fig, ax = plt.subplots(figsize=(max(8, 1.6 * len(TASKS)), 5))
     _grouped_bar(
         ax,
-        TASKS,
+        task_labels,
         {
             n: [results[n]["per_task"][t]["avg_per_step_reward"] for t in TASKS]
             for n in names
@@ -638,7 +757,7 @@ def _write_charts(entries, results, out_dir):
                 for n in names
             },
             "mean reward / step",
-            f"Modular reward breakdown — {task}",
+            f"Modular reward breakdown — {labels[task]}",
         )
         p = os.path.join(out_dir, f"chart_reward_components_{task}.png")
         fig.tight_layout()
@@ -761,8 +880,9 @@ def _write_outputs(entries, results, meta, out_dir):
 
 
 def main(cfg: EvalConfig, config_source: str):
-    global CFG
+    global CFG, TASKS
     CFG = cfg  # main-process config; workers get their own copy via _init_worker
+    TASKS = cfg.task_names  # task ids to evaluate (gait units / onehot fallback)
 
     # optional model filter (cfg.only_models) for quick subsets / smoke runs
     specs = cfg.models
@@ -792,10 +912,12 @@ def main(cfg: EvalConfig, config_source: str):
 
     raw = {e["name"]: {t: _empty_agg() for t in TASKS} for e in entries}
 
+    labels = cfg.label_by_task
     print(f"Config:      {config_source}")
     print(f"Eval name:   {cfg.eval_name}")
+    print(f"Scheme:      {cfg.task_scheme}")
     print(f"Models:      {len(entries)}  ({', '.join(e['name'] for e in entries)})")
-    print(f"Tasks:       {len(TASKS)}  ({', '.join(TASKS)})")
+    print(f"Tasks:       {len(TASKS)}  ({', '.join(labels[t] for t in TASKS)})")
     print(
         f"Episode:     {cfg.episode_len} frames ({cfg.ep_time}s), command modulated every {cfg.modulate_every}"
     )
@@ -847,7 +969,8 @@ def main(cfg: EvalConfig, config_source: str):
     _print_report(entries, results)
 
     stamp = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
-    out_dir = os.path.join(OUTPUT_ROOT, f"{cfg.eval_name}_{stamp}")
+    dir_name = f"{cfg.eval_name}_{stamp}" if cfg.date_suffix else cfg.eval_name
+    out_dir = os.path.join(OUTPUT_ROOT, dir_name)
     meta = dict(
         eval_name=cfg.eval_name,
         config_source=config_source,
@@ -857,7 +980,9 @@ def main(cfg: EvalConfig, config_source: str):
         modulate_every=cfg.modulate_every,
         episodes_per_task=cfg.episodes_per_task,
         fps=FPS,
+        task_scheme=cfg.task_scheme,
         tasks=TASKS,
+        task_units=[dict(u) for u in cfg.tasks],  # gait units (empty under onehot)
         cmd_vel_forward_range=cfg.cmd_vel_forward_range,
         cmd_vel_backward_range=cfg.cmd_vel_backward_range,
         cmd_tilt_range=cfg.cmd_tilt_range,
@@ -879,15 +1004,23 @@ if __name__ == "__main__":
         message="__array_wrap__ must accept context and return_scalar arguments",
         category=DeprecationWarning,
     )
+    available = sorted(p.stem for p in CONFIG_DIR.glob("*.yaml"))
     parser = argparse.ArgumentParser(
         description="Per-task behavioral eval. Pick an experiment config under "
-        "scripts/eval/configs/ (by name or path)."
+        "scripts/eval/configs/ (by name or path).\n\n"
+        f"Available configs: {', '.join(available)}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "config",
         nargs="?",
-        help="config name resolved to "
-        "scripts/eval/configs/<name>.yaml, or a path to a .yaml file",
+        help="config name resolved to scripts/eval/configs/<name>.yaml, "
+        "or a path to a .yaml file. "
+        f"Available: {', '.join(available)}",
     )
     a = parser.parse_args()
+    if a.config is None:
+        parser.print_help()
+        print(f"\nAvailable configs: {', '.join(available)}")
+        raise SystemExit(1)
     main(load_config(a.config), config_source=a.config)
