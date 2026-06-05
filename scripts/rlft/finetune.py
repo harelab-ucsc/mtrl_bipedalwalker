@@ -18,6 +18,16 @@ Saves to ``models/rudin[_adv]/finetuned/<version>/``:
 Run:  python scripts/rlft/finetune.py --preset switching
 """
 
+# Cap per-process CPU thread pools before importing numpy/torch. Each
+# SubprocVecEnv worker is a separate process, and by default each one's
+# numpy/MKL/OpenMP spins up one thread per core — so N workers oversubscribe the
+# box (load average >> core count) and thrash on spin-waits instead of doing
+# work. Parallelism here is across processes, so 1 BLAS thread per process is
+# correct. Override the cap by exporting OMP_NUM_THREADS=... before launching.
+import os
+for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 import argparse
 from functools import partial
 
