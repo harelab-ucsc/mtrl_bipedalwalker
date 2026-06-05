@@ -1,0 +1,68 @@
+# Experiment config for scripts/eval/task_switching_eval.py. Select with:
+#     python scripts/eval/task_switching_eval.py switching_eval_4
+#
+# GAIT-scheme task-switching comparison (single + task combination): the 2.x.x / 3.x.x gait pretrain
+# models (ours, adversarial) vs the rudin / rudin_adv DAgger-distilled gait baselines, plus the
+# hybrid oracle as a topline reference.
+
+eval_name: switching_eval_4
+task_scheme: gait        # gait bits (two_leg, one_leg, unused); the default
+
+# --- episode / switch ---
+ep_time: 10              # seconds per episode -> the survival window (N = ep_time * 50 frames)
+switch_fraction: 0.3333  # fraction of the episode held by task A before switching to B (N/3)
+episodes_per_pair: 1500  # episodes per (model, ordered pair A->B)
+episode_chunk: 100       # episodes per pool job (load balancing)
+seed_base: 42            # episode i uses the same seed across models (fair comparison)
+
+# --- switch endpoints: 5 single tasks + the 2 combinations (gait units) ---
+# The script runs EVERY ordered distinct pair (A->B, A != B): 7 tasks -> 42 pairs. To make it
+# lighter, lower episodes_per_pair or drop transitions via exclude_pairs below.
+switch_tasks:
+  - { name: walk_forward,  label: "walk forward",         gait: [1, 0], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [0.0, 0.0] }
+  - { name: walk_backward, label: "walk backward",        gait: [1, 0], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [0.0, 0.0] }
+  - { name: hop_forward,   label: "hop forward",          gait: [0, 1], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [0.0, 0.0] }
+  - { name: hop_backward,  label: "hop backward",         gait: [0, 1], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [0.0, 0.0] }
+  - { name: tilt,          label: "tilt",                 gait: [1, 0], cmd_vel_range: [0.0, 0.0],  cmd_tilt_range: [-0.75, 0.75] }
+  - { name: walk_fwd+tilt, label: "walk forward + tilt",  gait: [1, 0], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [-0.75, 0.75] }
+  - { name: walk_bwd+tilt, label: "walk backward + tilt", gait: [1, 0], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [-0.75, 0.75] }
+
+exclude_pairs: null      # default: run every ordered pair
+
+# --- run controls ---
+only_models: null
+date_suffix: false
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle, gait routing).
+# ref:  checkpoint path relative to models/ (hybrid: null), pointing at the final ckpt.
+models:
+  - name: ppo_bc_adv/pretrain/2.0.0
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/2.0.0/final.zip
+    desc: "Ours; gait pretrain; MSE BC @ 0.5 coef; rollout length 300; adversarial task selection"
+
+  - name: ppo_bc_adv/pretrain/2.0.1
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/2.0.1/final.zip
+    desc: "Ours; gait pretrain; MSE BC @ 0.2 coef; rollout length 300; adversarial task selection"
+
+  - name: ppo_bc_adv/pretrain/3.0.0
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/3.0.0/final.zip
+    desc: "Ours; gait pretrain; MSE BC @ 0.2 coef; trained on all tasks; rollout length 600; adversarial task selection"
+
+  - name: rudin/distill/2.0.0
+    kind: torch
+    ref: rudin/distill/2.0.0/final.pt
+    desc: "Baseline (Rudin); DAgger-distilled gait student; uniform task selection"
+
+  - name: rudin_adv/distill/2.0.0
+    kind: torch
+    ref: rudin_adv/distill/2.0.0/final.pt
+    desc: "Baseline (Rudin); DAgger-distilled gait student; adversarial task selection"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle (gait routing) — topline reference baseline"

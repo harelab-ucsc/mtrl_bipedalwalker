@@ -5,10 +5,13 @@ scripts.ppo_bc.pretrain_critic_config
 Typed presets for ``scripts/ppo_bc/pretrain_critic.py``. Pick one with ``--preset``.
 
 ``PretrainCriticConfig`` is a frozen dataclass whose field defaults are the base
-config. A preset is just a ``PretrainCriticConfig(...)`` constructed with its
-deltas — direct construction (not ``dataclasses.replace``) so the editor
-autocompletes every field. The dataclass is picklable so it can be bound into
-the SubprocVecEnv factory and shipped to worker processes.
+config. A preset is a ``PretrainCriticConfig(...)`` constructed with its deltas —
+direct construction so the editor autocompletes every field. Calling an existing
+preset, ``BASE(experiment_name=..., ...)``, derives a sibling with those fields
+replaced (a thin ``dataclasses.replace`` wrapper); the adversarial/non-adversarial
+and version variants below use this to avoid re-spelling shared fields. The
+dataclass is picklable so it can be bound into the SubprocVecEnv factory and
+shipped to worker processes.
 
 Critic pretraining loads a trained PPO_BC actor, freezes it, and trains a fresh
 critic so the value network is re-fit to a given reward/env landscape before a
@@ -20,7 +23,7 @@ rewards on or trains combos).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Sequence
 
 import numpy as np
@@ -74,7 +77,7 @@ class PretrainCriticConfig:
     # (vel, tilt) secs between cmd resamples; > ep_time disables cmd switching.
     cmd_switching_time: tuple[float, float] = (3.0, 4.0)
     # secs between task resamples; > ep_time disables in-episode task switching.
-    task_switching_time: float = 6.0
+    task_switching_time: float = 11.0
     cmd_interp_speed: tuple[float, float] = (5.0, 1.0)  # (x_vel, tilt)
     cmd_sample_range: tuple[tuple[float, float], tuple[float, float]] = (
         (-5.0, 5.0),
@@ -109,7 +112,7 @@ class PretrainCriticConfig:
     max_grad_norm: float = 0.5
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
     # log_std the frozen policy is pinned to
-    init_log_std: float = float(np.log(0.5))
+    init_log_std: float = float(np.log(1.0))
 
     # network architecture
     hidden_dims: tuple[int, ...] = (512, 256, 256, 128, 64)
@@ -119,27 +122,81 @@ class PretrainCriticConfig:
     # experts (ctor requirement only; not polled when collect_data=False)
     expert_paths: dict[str, str] = field(default_factory=_default_expert_paths)
 
+    def __call__(self, **overrides) -> "PretrainCriticConfig":
+        """Derive a sibling preset: ``BASE(field=...)`` returns a copy with those
+        fields replaced (thin ``dataclasses.replace`` wrapper). Lets the
+        adversarial/non-adversarial and version variants share one base instead
+        of re-spelling every field."""
+        return replace(self, **overrides)
+
+
 # =============================== gait (2.x.x) ===============================
-# Re-fit the critic on the SAME gait reward + task distribution as the RL stage
-# that follows (this is the key correctness requirement). The SWITCHING critic
-# sees the 5 single tasks with fast switching (matching SWITCHING_GAIT); the
-# COMBINATION critic sees walk+tilt (matching COMBINATION_GAIT). Both load the
-# gait PRETRAIN_GAIT actor and write a `...c` zip the RL preset's load_model uses.
-SWITCHING_GAIT = PretrainCriticConfig(
-    experiment_name="ppo_bc_gait/pretrain/2.0.0c",
+# Re-fit a fresh critic on the SAME gait reward + task distribution as the RL
+# stage that follows (the key correctness requirement), then write a `...c` zip
+# the RL preset's load_model resumes. Three tracks × three variants:
+#   tracks    comb  walk+tilt combos, switching off          (→ COMBINATION_GAIT)
+#             swit  5 single gait tasks, fast switching       (→ SWITCHING_GAIT)
+#             cs    singles + combos together, fast switching over the union
+#   variants  *_200A  adversarial actor   ppo_bc_adv/pretrain/2.0.0
+#             *_200   plain actor          ppo_bc/pretrain/2.0.0
+#             *_201A  adversarial actor   ppo_bc_adv/pretrain/2.0.1
+# Every variant of a track shares one source actor, so the critic output reuses
+# the actor's dir + version with a `c-<track>` suffix to keep the three tracks
+# from overwriting each other. Each track's `*_200A` is spelled out; the non-A
+# and 2.0.1 siblings derive from it (only the two path fields change).
+
+# ---- combination: walk+tilt combos, switching off (matches COMBINATION_GAIT) ----
+COMB_200A = PretrainCriticConfig(
+    experiment_name="ppo_bc_adv/pretrain/2.0.0c-comb",
+    load_actor_from="ppo_bc_adv/pretrain/2.0.0/final.zip",
     task_scheme=GAIT,
-    load_actor_from="ppo_bc_gait/pretrain/2.0.0/final.zip",
-    allowed_task_mixing=SINGLE_TASKS_GAIT,
-    task_switching_time=2.0,
-    use_indv_task_rew=True,
-)
-COMBINATION_GAIT = PretrainCriticConfig(
-    experiment_name="ppo_bc_gait/pretrain_comb/2.0.0c",
-    task_scheme=GAIT,
-    load_actor_from="ppo_bc_gait/pretrain/2.0.0/final.zip",
     allowed_task_mixing=COMBINATION_TASKS_GAIT,
     task_switching_time=11.0,  # no switching — focus on the combination
     use_indv_task_rew=True,
+)
+COMB_200 = COMB_200A(
+    experiment_name="ppo_bc/pretrain/2.0.0c-comb",
+    load_actor_from="ppo_bc/pretrain/2.0.0/final.zip",
+)
+COMB_201A = COMB_200A(
+    experiment_name="ppo_bc_adv/pretrain/2.0.1c-comb",
+    load_actor_from="ppo_bc_adv/pretrain/2.0.1/final.zip",
+)
+
+# ---- switching: 5 single gait tasks, fast switching (matches SWITCHING_GAIT) ----
+SWIT_200A = PretrainCriticConfig(
+    experiment_name="ppo_bc_adv/pretrain/2.0.0c-swit",
+    load_actor_from="ppo_bc_adv/pretrain/2.0.0/final.zip",
+    task_scheme=GAIT,
+    allowed_task_mixing=SINGLE_TASKS_GAIT,
+    task_switching_time=3.0,  # switch fast
+    use_indv_task_rew=True,
+)
+SWIT_200 = SWIT_200A(
+    experiment_name="ppo_bc/pretrain/2.0.0c-swit",
+    load_actor_from="ppo_bc/pretrain/2.0.0/final.zip",
+)
+SWIT_201A = SWIT_200A(
+    experiment_name="ppo_bc_adv/pretrain/2.0.1c-swit",
+    load_actor_from="ppo_bc_adv/pretrain/2.0.1/final.zip",
+)
+
+# ---- comb-swit: singles + combos together, fast switching over the union ----
+CS_200A = PretrainCriticConfig(
+    experiment_name="ppo_bc_adv/pretrain/2.0.0c-cs",
+    load_actor_from="ppo_bc_adv/pretrain/2.0.0/final.zip",
+    task_scheme=GAIT,
+    allowed_task_mixing=(*SINGLE_TASKS_GAIT, *COMBINATION_TASKS_GAIT),
+    task_switching_time=3.0,  # switch fast over the union
+    use_indv_task_rew=True,
+)
+CS_200 = CS_200A(
+    experiment_name="ppo_bc/pretrain/2.0.0c-cs",
+    load_actor_from="ppo_bc/pretrain/2.0.0/final.zip",
+)
+CS_201A = CS_200A(
+    experiment_name="ppo_bc_adv/pretrain/2.0.1c-cs",
+    load_actor_from="ppo_bc_adv/pretrain/2.0.1/final.zip",
 )
 
 # =============================== legacy onehot (1.x.x) ===============================
@@ -182,10 +239,17 @@ TASK_COMB_ONLY_NLL_ADV = PretrainCriticConfig(
 
 # Registry consumed by pretrain_critic.py's --preset flag.
 PRESETS: dict[str, PretrainCriticConfig] = {
-    "switching_gait": SWITCHING_GAIT,
-    "combination_gait": COMBINATION_GAIT,
-    "task-comb-only_1.0.2": TASK_COMB_ONLY_MSE_LONG,
-    "task-comb-only_1.0.2a": TASK_COMB_ONLY_MSE_ADV_LONG,
-    "task-comb-only_1.0.3": TASK_COMB_ONLY_NLL,
-    "task-comb-only_1.0.3a": TASK_COMB_ONLY_NLL_ADV,
+    "comb_2.0.0a": COMB_200A,
+    "comb_2.0.0": COMB_200,
+    "comb_2.0.1a": COMB_201A,
+    "swit_2.0.0a": SWIT_200A,
+    "swit_2.0.0": SWIT_200,
+    "swit_2.0.1a": SWIT_201A,
+    "comb-swit_2.0.0a": CS_200A,
+    "comb-swit_2.0.0": CS_200,
+    "comb-swit_2.0.1a": CS_201A,
+    # "task-comb-only_1.0.2": TASK_COMB_ONLY_MSE_LONG,
+    # "task-comb-only_1.0.2a": TASK_COMB_ONLY_MSE_ADV_LONG,
+    # "task-comb-only_1.0.3": TASK_COMB_ONLY_NLL,
+    # "task-comb-only_1.0.3a": TASK_COMB_ONLY_NLL_ADV,
 }

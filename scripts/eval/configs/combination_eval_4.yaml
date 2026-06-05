@@ -1,0 +1,57 @@
+# Experiment config for scripts/eval/task_combination_eval.py. Select with:
+#     python scripts/eval/task_combination_eval.py combination_eval_4
+#
+# GAIT-scheme task-combination comparison (walk_fwd+tilt, walk_bwd+tilt): the 2.x.x / 3.x.x gait
+# pretrain models (ours, adversarial) vs the rudin / rudin_adv DAgger-distilled gait baselines,
+# plus the hybrid (averaged-expert) baseline as a topline reference.
+
+eval_name: task_combination_eval_4
+task_scheme: gait        # gait bits (two_leg, one_leg, unused); the default
+date_suffix: false
+
+ep_time: 10
+modulate_period: 3
+episodes_per_combo: 10000
+episode_chunk: 100
+seed_base: 42
+
+# --- combinations (gait units) ---
+# walk + tilt is a two-leg gait with BOTH a nonzero velocity range and a nonzero tilt range
+# (it has no single expert -> RL-driven).
+task_combinations:
+  - { name: walk_fwd+tilt, label: "walk forward + tilt",  gait: [1, 0], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [-0.75, 0.75] }
+  - { name: walk_bwd+tilt, label: "walk backward + tilt", gait: [1, 0], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [-0.75, 0.75] }
+
+only_models: null
+
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (averaged-expert baseline, gait routing).
+models:
+  - name: ppo_bc_adv/pretrain/2.0.0
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/2.0.0/final.zip
+    desc: "Ours; gait pretrain; MSE BC @ 0.5 coef; rollout length 300; adversarial task selection"
+
+  - name: ppo_bc_adv/pretrain/2.0.1
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/2.0.1/final.zip
+    desc: "Ours; gait pretrain; MSE BC @ 0.2 coef; rollout length 300; adversarial task selection"
+
+  - name: ppo_bc_adv/pretrain/3.0.0
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/3.0.0/final.zip
+    desc: "Ours; gait pretrain; MSE BC @ 0.2 coef; trained on all tasks; rollout length 600; adversarial task selection"
+
+  - name: rudin/distill/2.0.0
+    kind: torch
+    ref: rudin/distill/2.0.0/final.pt
+    desc: "Baseline (Rudin); DAgger-distilled gait student; uniform task selection"
+
+  - name: rudin_adv/distill/2.0.0
+    kind: torch
+    ref: rudin_adv/distill/2.0.0/final.pt
+    desc: "Baseline (Rudin); DAgger-distilled gait student; adversarial task selection"
+
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Averaged-expert baseline (gait routing; no true combination expert)"
