@@ -100,6 +100,9 @@ def main():
         cmd_sample_range=(VEL_RANGE, TILT_RANGE),
         cmd_sample_zero=CMD_SAMPLE_ZERO,
         allowed_task_mixing=[TASK_VEC],
+        # single forced task: switching must allow repeats (the without-replacement
+        # default can't draw 2 distinct tasks from a 1-task list and would raise at init).
+        task_switch_replacement=True,
         hull_x_range=HULL_X_RANGE,
         manual_ctrl_mode=False,
     )

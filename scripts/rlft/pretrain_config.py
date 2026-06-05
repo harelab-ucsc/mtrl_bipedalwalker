@@ -6,10 +6,13 @@ Typed presets for ``scripts/rlft/pretrain_critic.py`` (the Rudin baseline's
 critic-pretraining stage). Pick one with ``--preset``.
 
 ``PretrainConfig`` is a frozen dataclass whose field defaults are the base
-config; a preset is just a ``PretrainConfig(...)`` with its deltas (direct
-construction, not ``dataclasses.replace``, so the editor autocompletes every
-field). The dataclass is picklable so it can be bound into the SubprocVecEnv
-factory and shipped to worker processes.
+config; a preset is a ``PretrainConfig(...)`` constructed with its deltas —
+direct construction so the editor autocompletes every field. Calling an existing
+preset, ``BASE(experiment_name=..., ...)``, derives a sibling with those fields
+replaced (a thin ``dataclasses.replace`` wrapper); the rudin / rudin_adv variants
+below use this so the plain and adversarial students share a byte-identical
+environment, differing only in the two path fields. The dataclass is picklable so
+it can be bound into the SubprocVecEnv factory and shipped to worker processes.
 
 This is a *pure-RL* baseline: no behavior cloning, no experts, no adversarial
 task sampling. The actor is a frozen distilled student (``load_student_from``, a
@@ -20,7 +23,7 @@ path strings (mirrors scripts/ppo_bc/pretrain_critic_config.py).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Sequence
 
 import numpy as np
@@ -63,6 +66,9 @@ class PretrainConfig:
     cmd_switching_time: tuple[float, float] = (3.0, 4.0)
     # secs between task resamples; > ep_time disables in-episode task switching.
     task_switching_time: float = 11.0
+    # When False (default), in-episode task draws are without replacement (no
+    # consecutive repeats); errors at init if draws-per-episode > number of tasks.
+    task_switch_replacement: bool = False
     cmd_interp_speed: tuple[float, float] = (5.0, 1.0)  # (x_vel, tilt)
     cmd_sample_range: tuple[tuple[float, float], tuple[float, float]] = (
         (-5.0, 5.0),
@@ -97,26 +103,53 @@ class PretrainConfig:
     max_grad_norm: float = 0.5
     # Tight policy std so the frozen actor stays near the student's mode while
     # the critic learns the return landscape under that policy.
-    init_log_std: float = float(np.log(0.5))
+    init_log_std: float = float(np.log(1.0))
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
 
+    def __call__(self, **overrides) -> "PretrainConfig":
+        return replace(self, **overrides)
 
-# --- gait (2.x.x) ---------------------------------------------------------------
-# Re-fit the critic on the same gait reward + task distribution as the finetune
-# stage. Load the gait distilled student (rudin/distill/2.0.0). Switching uses the
-# 5 single tasks with fast switching; combination uses walk+tilt.
-SWITCHING_GAIT = PretrainConfig(
-    experiment_name="rudin/pretrained_critic/2.0.0",
+
+# ---- combination: walk+tilt combos, switching off ----
+COMB_200A = PretrainConfig(
+    experiment_name="rudin_adv/pretrained_critic/2.0.0c-comb",
+    load_student_from="rudin_adv/distill/2.0.0/final.pt",
     task_scheme=GAIT,
-    load_student_from="rudin/distill/2.0.0/final.pt",
-    allowed_task_mixing=SINGLE_TASKS_GAIT,
-    task_switching_time=2.0,
-)
-COMBINATION_GAIT = PretrainConfig(
-    experiment_name="rudin/pretrained_critic_comb/2.0.0",
-    task_scheme=GAIT,
-    load_student_from="rudin/distill/2.0.0/final.pt",
     allowed_task_mixing=COMBINATION_TASKS_GAIT,
+    task_switching_time=11.0,  # no switching — focus on the combination
+    use_indv_task_rew=True,
+)
+COMB_200 = COMB_200A(
+    experiment_name="rudin/pretrained_critic/2.0.0c-comb",
+    load_student_from="rudin/distill/2.0.0/final.pt",
+)
+
+# ---- switching: 5 single gait tasks, fast switching ----
+SWIT_200A = PretrainConfig(
+    experiment_name="rudin_adv/pretrained_critic/2.0.0c-swit",
+    load_student_from="rudin_adv/distill/2.0.0/final.pt",
+    task_scheme=GAIT,
+    allowed_task_mixing=SINGLE_TASKS_GAIT,
+    task_switching_time=3.0,  # switch fast
+    use_indv_task_rew=True,
+)
+SWIT_200 = SWIT_200A(
+    experiment_name="rudin/pretrained_critic/2.0.0c-swit",
+    load_student_from="rudin/distill/2.0.0/final.pt",
+)
+
+# ---- comb-swit: singles + combos together, fast switching over the union ----
+CS_200A = PretrainConfig(
+    experiment_name="rudin_adv/pretrained_critic/2.0.0c-cs",
+    load_student_from="rudin_adv/distill/2.0.0/final.pt",
+    task_scheme=GAIT,
+    allowed_task_mixing=(*SINGLE_TASKS_GAIT, *COMBINATION_TASKS_GAIT),
+    task_switching_time=3.0,  # switch fast over the union
+    use_indv_task_rew=True,
+)
+CS_200 = CS_200A(
+    experiment_name="rudin/pretrained_critic/2.0.0c-cs",
+    load_student_from="rudin/distill/2.0.0/final.pt",
 )
 
 # --- legacy onehot (1.x.x) ------------------------------------------------------
@@ -147,8 +180,14 @@ MIX = PretrainConfig(
 
 # Registry consumed by pretrain_critic.py's --preset flag.
 PRESETS: dict[str, PretrainConfig] = {
-    "switching_gait": SWITCHING_GAIT,
-    "combination_gait": COMBINATION_GAIT,
+    # gait (2.x.x) — rudin baselines
+    "comb_2.0.0a": COMB_200A,
+    "comb_2.0.0": COMB_200,
+    "swit_2.0.0a": SWIT_200A,
+    "swit_2.0.0": SWIT_200,
+    "comb-swit_2.0.0a": CS_200A,
+    "comb-swit_2.0.0": CS_200,
+    # legacy onehot (1.x.x)
     "switching": SWITCHING,
     "combination": COMBINATION,
     "mix": MIX,

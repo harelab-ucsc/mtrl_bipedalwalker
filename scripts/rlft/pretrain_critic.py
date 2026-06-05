@@ -64,6 +64,7 @@ def make_env(cfg: PretrainConfig):
             ep_time=cfg.ep_time,
             cmd_switching_time=cfg.cmd_switching_time,
             task_switching_time=cfg.task_switching_time,
+            task_switch_replacement=cfg.task_switch_replacement,
             cmd_interp_speed=cfg.cmd_interp_speed,
             cmd_sample_range=cfg.cmd_sample_range,
             cmd_sample_zero=cfg.cmd_sample_zero,

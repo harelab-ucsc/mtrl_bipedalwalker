@@ -8,14 +8,20 @@ Warm-starts from a pretrained-critic zip (actor + critic, produced by
 scripts/rlft/pretrain_critic.py) and continues training in the same pure-RL
 RlFTEnv, but with the actor unfrozen and **stricter objective clipping + a
 smaller, decaying LR** so RL refines the policy without diverging from the
-distilled start. The network architecture is inherited from the loaded zip.
+distilled start. The network architecture is inherited from the loaded zip. The
+env + PPO settings mirror ppo_bc's 2.x.x RL presets for a fair baseline.
 
-Saves to ``models/rudin[_adv]/finetuned/<version>/``:
+The adversarial (``rudin_adv``) lineage additionally runs adversarial task
+selection during RL via ``AdversarialTaskCallback`` (difficulty-weighted task
+sampling, a stock-PPO port of PPO_BC's eval_expert_task_performance), enabled by
+``cfg.adversarial_ag``. The plain lineage samples tasks uniformly.
+
+Saves to ``models/rudin[_adv]/{combination,switching,comb_switching}/<version>/``:
   - ``best/best_model.zip``     (best by eval reward; what play/compare load)
   - ``rl_model_*_steps.zip``    (periodic checkpoints; what eval/time_alive loads)
   - ``final.zip``               (last checkpoint)
 
-Run:  python scripts/rlft/finetune.py --preset switching
+Run:  python scripts/rlft/finetune.py --preset switching_200a
 """
 
 # Cap per-process CPU thread pools before importing numpy/torch. Each
@@ -32,16 +38,19 @@ import argparse
 from functools import partial
 
 import gymnasium as gym
+import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import (
+    BaseCallback,
     EvalCallback,
     CheckpointCallback,
     CallbackList,
 )
 from stable_baselines3.common.logger import configure
+from stable_baselines3.common.utils import obs_as_tensor
 
 import time
 import subprocess
@@ -74,6 +83,101 @@ def make_env(cfg: FinetuneConfig):
         )
     )
     return env
+
+
+def make_adversarial_eval_env(cfg: FinetuneConfig) -> RlFTEnv:
+    # Single, non-vectorized, un-Monitored RlFTEnv used only by the adversarial
+    # task-selection callback for per-task time-alive scoring. Mirrors make_env's
+    # task config exactly: the PMF is built positionally over allowed_task_mixing,
+    # so the eval env must enumerate the same tasks in the same order. (Port of
+    # scripts/ppo_bc/train.py:make_adversarial_eval_env, adapted to FinetuneConfig.)
+    return RlFTEnv(
+        gym.make("BipedalWalker-v3"),
+        ep_time=cfg.ep_time,
+        cmd_switching_time=cfg.cmd_switching_time,
+        task_switching_time=cfg.task_switching_time,
+        task_switch_replacement=cfg.task_switch_replacement,
+        cmd_interp_speed=cfg.cmd_interp_speed,
+        cmd_sample_range=cfg.cmd_sample_range,
+        cmd_sample_zero=cfg.cmd_sample_zero,
+        allowed_task_mixing=list(cfg.allowed_task_mixing),
+        use_rew_for_individual_tasks=True,  # always on for eval
+        hull_x_range=cfg.hull_x_range,
+        task_scheme=cfg.task_scheme,
+    )
+
+
+def _task_pmf_from_scores(scores: list[float], k: float) -> list[float]:
+    """Weight by (max - score) so the worst (hardest, lowest time-alive) task gets
+    the most mass, then mix with uniform by ``k``. Kept byte-identical to
+    src/ppo_bc_sb3/common/on_policy_algorithm.py:_task_pmf_from_scores for fairness
+    with the ppo_bc method."""
+    w = [max(scores) - s for s in scores]
+    sum_w = sum(w)
+    U = [1.0 / len(scores)] * len(scores)
+    P = [U[i] if sum_w == 0 else w[i] / sum_w for i in range(len(scores))]
+    return [k * p + (1.0 - k) * u for p, u in zip(P, U)]
+
+
+class AdversarialTaskCallback(BaseCallback):
+    """Difficulty-weighted task sampling for RL fine-tuning — a stock-PPO port of
+    PPO_BC's ``OnPolicyAlgorithm.eval_expert_task_performance``. Once per rollout,
+    score the current policy on each allowed task by mean time-alive on a single
+    isolated eval env, convert to a PMF (hardest task gets the most mass, blended
+    with uniform by ``k``), and broadcast it to every training env via
+    ``set_task_sample_probs``. Expert-independent: only needs the policy + eval env.
+
+    Scoring runs on ``_on_rollout_end`` (the natural SB3 hook), so it scores the
+    pre-update policy of the iteration and the PMF takes effect on the next rollout
+    — a one-iteration lag vs PPO_BC's post-update timing, negligible for difficulty
+    estimation."""
+
+    def __init__(self, eval_env: RlFTEnv, steps_per_task: int, k: float, verbose: int = 0):
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self.steps_per_task = steps_per_task
+        self.k = k
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        env = self.eval_env
+        tasks = list(env._allowed_tasks)
+        low, high = env.action_space.low, env.action_space.high
+
+        self.model.policy.set_training_mode(False)
+        scores: list[float] = []
+        for task in tasks:
+            env.set_forced_task(task)
+            obs, _ = env.reset()
+            times: list[int] = []
+            alive = 0
+            for _ in range(self.steps_per_task):
+                with torch.no_grad():
+                    act_t, _, _ = self.model.policy(
+                        obs_as_tensor(obs[None], self.model.device)
+                    )
+                act = np.clip(act_t.cpu().numpy()[0], low, high)
+                obs, _, term, trunc, _ = env.step(act)
+                if term or trunc:
+                    times.append(alive)
+                    alive = 0
+                    obs, _ = env.reset()
+                else:
+                    alive += 1
+            times.append(alive)
+            scores.append(float(np.mean(times)))
+        env.set_forced_task(None)
+        self.model.policy.set_training_mode(True)
+
+        probs = _task_pmf_from_scores(scores, self.k)
+        # env_method routes through gym.Wrapper.__getattr__ to the inner RlFTEnv;
+        # set_attr would only touch the outer Monitor wrapper.
+        self.training_env.env_method("set_task_sample_probs", tuple(probs))
+        for task, s, p in zip(tasks, scores, probs):
+            self.logger.record(f"adversarial/time_alive_{task.name}", s)
+            self.logger.record(f"adversarial/prob_{task.name}", p)
 
 
 def main(cfg: FinetuneConfig):
@@ -129,6 +233,21 @@ def main(cfg: FinetuneConfig):
         save_path=f"{MODELS_DIR}/{experiment_name}/",
     )
 
+    callbacks = [StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]
+    # adv lineage: difficulty-weighted task sampling during RL. The standard
+    # EvalCallback above stays on the uniform eval env (best-model selection
+    # unbiased); this drives the *training* env task distribution only.
+    adv_eval_env = None
+    if cfg.adversarial_ag:
+        adv_eval_env = make_adversarial_eval_env(cfg)
+        callbacks.append(
+            AdversarialTaskCallback(
+                adv_eval_env,
+                cfg.adversarial_eval_steps_per_task,
+                cfg.adversarial_k,
+            )
+        )
+
     print_run_info(cfg, train_env, model, experiment_name, pretrained)
 
     print(f"Starting fine-tuning ({cfg.timesteps:,} timesteps)...")
@@ -136,9 +255,7 @@ def main(cfg: FinetuneConfig):
     model.learn(
         total_timesteps=cfg.timesteps,
         reset_num_timesteps=True,
-        callback=CallbackList(
-            [StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]
-        ),
+        callback=CallbackList(callbacks),
         progress_bar=True,
     )
 
@@ -161,6 +278,8 @@ def main(cfg: FinetuneConfig):
 
     train_env.close()
     eval_env.close()
+    if adv_eval_env is not None:
+        adv_eval_env.close()
 
 
 def print_run_info(cfg, env, model, experiment_name, pretrained):
@@ -207,6 +326,12 @@ def print_run_info(cfg, env, model, experiment_name, pretrained):
             f"task_switch         {switch_desc(cfg.task_switching_time)}",
             f"tasks               {', '.join(task_name(t) for t in cfg.allowed_task_mixing)}",
             f"use_indv_task_rew   {cfg.use_indv_task_rew}",
+            f"adversarial_ag      {cfg.adversarial_ag}"
+            + (
+                f"  (k={cfg.adversarial_k}, {cfg.adversarial_eval_steps_per_task} steps/task)"
+                if cfg.adversarial_ag
+                else ""
+            ),
         ],
     )
 
@@ -246,8 +371,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--preset",
         choices=sorted(PRESETS.keys()),
-        default="switching",
-        help="which finetune_config preset to run (default: switching)",
+        default="switching_200a",
+        help="which finetune_config preset to run (default: switching_200a)",
     )
     parser.add_argument(
         "--timesteps",

@@ -42,6 +42,11 @@ models:
     ref: ppo_bc_adv/pretrain/2.0.0/final.zip
     desc: "Ours; gait pretrain; MSE BC @ 0.5 coef; rollout length 300; adversarial task selection"
 
+  - name: ppo_bc/pretrain/2.0.0
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/2.0.0/final.zip
+    desc: "Ours; gait pretrain; MSE BC @ 0.5 coef; rollout length 300; no adversarial task selection"
+
   - name: ppo_bc_adv/pretrain/2.0.1
     kind: sb3
     ref: ppo_bc_adv/pretrain/2.0.1/final.zip

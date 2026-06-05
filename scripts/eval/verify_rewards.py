@@ -167,6 +167,9 @@ def check_D_env_smoke():
         ep_time=10,
         cmd_switching_time=(2.0, 2.0),
         task_switching_time=1.0,  # force frequent task switches
+        # with replacement: the fast switching here would otherwise demand more
+        # distinct draws/episode than there are tasks (the without-replacement default).
+        task_switch_replacement=True,
         # onehot tuples → run this smoke under the onehot scheme.
         allowed_task_mixing=[(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1)],
         use_rew_for_individual_tasks=True,

@@ -36,7 +36,7 @@ class RlFTEnv(ProprioObsWrapper):
         ep_time: int = 15,
         cmd_switching_time: tuple[float, float] = (3.0, 4.0),
         task_switching_time: float = 6,
-        task_switch_replacement: bool = True,
+        task_switch_replacement: bool = False,
         cmd_interp_speed: tuple[float, float] = (5.0, 1.0),
         cmd_sample_range: tuple[tuple[float, float], tuple[float, float]] = (
             (-5.0, 5.0),
@@ -60,10 +60,10 @@ class RlFTEnv(ProprioObsWrapper):
             cmd_switching_time: How often (seconds) each command component is resampled.
                 Format is (vel, tilt). Interpolation smooths the transition to the new target.
             task_switching_time: How often (seconds) the task (walk / flamingo / tilt) is resampled.
-            task_switch_replacement: When False, task draws within an episode are without replacement
-                (no back-to-back repeats; the adversarial PMF is renormalized over the remaining
-                tasks). Raises at init if an episode would need more draws than there are allowed
-                tasks. When True (default), every draw is independent (with replacement).
+            task_switch_replacement: When False (default), task draws within an episode are without
+                replacement (no back-to-back repeats; the adversarial PMF is renormalized over the
+                remaining tasks). Raises at init if an episode would need more draws than there are
+                allowed tasks. When True, every draw is independent (with replacement).
             cmd_interp_speed: Limits how fast the live command tracks the target to avoid
                 jarring transitions. Format is (vel, tilt).
             cmd_sample_range: Uniform sample bounds for each command component. Format is

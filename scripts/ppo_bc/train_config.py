@@ -13,7 +13,7 @@ factory and shipped to worker processes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Sequence
 
 import numpy as np
@@ -52,7 +52,7 @@ class TrainConfig:
 
     # identity
     experiment_name: str = "ppo_bc/base"
-    timesteps: int = 200 * 1024 * 14
+    timesteps: int = 300 * 1024 * 14
 
     # obs-bit scheme: "gait" (default) or "onehot" (legacy). Drives env sampling,
     # expert routing, and which task-mixing recipe `allowed_task_mixing` should use.
@@ -66,7 +66,7 @@ class TrainConfig:
     task_switching_time: float = 11.0  # task switching turned off by default
     # When False, in-episode task draws are without replacement (no consecutive
     # repeats); RlFTEnv errors at init if draws-per-episode > number of allowed tasks.
-    task_switch_replacement: bool = True
+    task_switch_replacement: bool = False
     cmd_interp_speed: tuple[float, float] = (5.0, 1.0)  # (x_vel, tilt)
     cmd_sample_range: tuple[tuple[float, float], tuple[float, float]] = (
         (-5.0, 5.0),
@@ -85,7 +85,7 @@ class TrainConfig:
     act_var_floor: float = 0  # additive variance bias/floor on the student action dist
     bc_coef: float = 0.20  # weight on the BC loss in the total loss
     bc_batch_size: int = 256
-    bc_loss_type: str = "nll"  # nll / mse
+    bc_loss_type: str = "mse"  # nll / mse
     dagger_max_size: int | None = None  # cap on D
     collect_data: bool = True  # whether to collect DAgger rollouts or not
 
@@ -122,6 +122,9 @@ class TrainConfig:
 
     # experts
     expert_paths: dict[str, str] = field(default_factory=_default_expert_paths)
+    
+    def __call__(self, **overrides) -> "TrainConfig":
+        return replace(self, **overrides)
 
 
 # Primarily-IL single-task pretrain: stability-only RL reward, BC carries imitation,
@@ -149,7 +152,7 @@ PRETRAIN = TrainConfig(
     learning_rate=LinearSchedule(5e-4, 3e-5, 0.8),
 )
 
-PRETRAIN_2 = TrainConfig(
+PRETRAIN_200 = TrainConfig(
     # identity
     experiment_name="ppo_bc/pretrain/2.0.0",
     timesteps=300*1024*14,
@@ -172,7 +175,7 @@ PRETRAIN_2 = TrainConfig(
     learning_rate=LinearSchedule(5e-4, 3e-5, 0.8),
 )
 
-PRETRAIN_3 = TrainConfig(
+PRETRAIN_300A = TrainConfig(
     # identity
     experiment_name="ppo_bc_adv/pretrain/3.0.0",
     timesteps=600*1024*14,
@@ -210,7 +213,7 @@ PRETRAIN_3 = TrainConfig(
 # a low-weight BC regularizer against forgetting. Adversarial off here by choice —
 # only the combos are polled (uniformly); singles are held by the regularizer, not
 # retrained.
-COMBINATION = TrainConfig(
+COMB = TrainConfig(
     # identity
     experiment_name="ppo_bc_adv/combination/1.3.1",
     task_scheme=ONEHOT,
@@ -240,92 +243,141 @@ COMBINATION = TrainConfig(
     clip_range=0.1,
 )
 
-
-# =============================== gait (2.x.x) ===============================
-# Our-method stage 1 (mostly IL): single-task pretrain over the 5 gait tasks
-# (walk fwd/bwd, hop fwd/bwd, tilt). High bc_coef so BC carries imitation; the RL
-# reward is stability-only. Task switching ON without replacement (5 tasks, 5s
-# switch over a 10s ep ⇒ 3 distinct draws ≤ 5). Adversarial up-weights hard tasks.
-PRETRAIN_GAIT = TrainConfig(
-    experiment_name="ppo_bc_gait/pretrain/2.0.0",
+COMB_200A = TrainConfig(
+    # identity
+    experiment_name="ppo_bc_adv/combination/2.0.0",
+    timesteps=300*1024*14,
     task_scheme=GAIT,
-    timesteps=400 * 1024 * 14,
-    # environment
-    allowed_task_mixing=SINGLE_TASKS_GAIT,
-    task_switching_time=5.0,
-    task_switch_replacement=False,
-    use_indv_task_rew=False,
-    # dagger / bc — high BC weight (0.5–0.7) so imitation dominates the pretrain
-    act_var_floor=0.2,
-    bc_coef=0.6,
-    bc_loss_type="mse",
-    # adversarial
-    adversarial_ag=True,
-    adversarial_eval_steps_per_task=5000,
-    # ppo
-    learning_rate=LinearSchedule(5e-4, 3e-5, 0.8),
-)
-
-# Our-method stage 2 (mostly RL, BC as regularization): rapid task switching with a
-# much lower bc_coef. Warm-start from a critic re-fit on the gait switching reward
-# (see ppo_bc/pretrain_critic_config.py). 5 tasks + 2s switching over a 10s ep ⇒ 6
-# draws, so draw WITH replacement (without-replacement would need ≥ 6 tasks).
-SWITCHING_GAIT = TrainConfig(
-    experiment_name="ppo_bc_gait/switching/2.0.0",
-    task_scheme=GAIT,
-    load_model="ppo_bc_gait/pretrain/2.0.0c/final.zip",  # critic re-fit + actor
-    # environment
-    allowed_task_mixing=SINGLE_TASKS_GAIT,
-    task_switching_time=2.0,  # switch fast
-    task_switch_replacement=True,
-    use_indv_task_rew=True,
-    # dagger / bc — low weight: expert relabeling only regularizes against forgetting
-    bc_coef=0.1,
-    bc_loss_type="mse",
-    collect_data=True,
-    # adversarial off — uniform rapid switching
-    adversarial_ag=False,
-    init_log_std=float(np.log(0.5)),
-    # ppo — lower, decaying LR + tight clip for fine-tuning
-    learning_rate=LinearSchedule(5e-5, 5e-6, 0.8),
-    ent_coef=0.005,
-    clip_range=0.1,
-)
-
-# Walk + tilt combination (no single expert → RL-driven via the task reward). Loaded
-# DAgger dataset (if any) only regularizes; combos aren't relabeled. Switching off to
-# focus on the combination.
-COMBINATION_GAIT = TrainConfig(
-    experiment_name="ppo_bc_gait/combination/2.0.0",
-    task_scheme=GAIT,
-    load_model="ppo_bc_gait/pretrain/2.0.0c/final.zip",  # critic re-fit + actor
+    load_model="ppo_bc_adv/pretrain/2.0.0c-comb/final.zip",  # pretrained critic and actor
+    load_dataset="ppo_bc_adv/pretrain/2.0.0.npz",
     # environment
     allowed_task_mixing=COMBINATION_TASKS_GAIT,
-    cmd_switching_time=(5.0, 5.0),
-    task_switching_time=11.0,  # no switching — focus on the combination
+    ep_time=10,
+    task_switching_time=11.0,  # no task switching for now, just focus on task combination
     use_indv_task_rew=True,
     # dagger / bc
-    bc_coef=0.1,
+    bc_coef=0.1,  # regularization instead of dominating signal
     bc_loss_type="mse",
-    collect_data=False,
-    adversarial_ag=False,
-    init_log_std=float(np.log(0.5)),
+    collect_data=False,  # no DAgger during RL
+    # adversarial — adv lineage continues adversarial task sampling into RL.
+    # (decoupled from collect_data; the PMF rescore loop runs on its own.)
+    adversarial_ag=True,
+    # model initialization
+    init_log_std=float(np.log(1)),
     # ppo
     learning_rate=LinearSchedule(5e-5, 5e-6, 0.8),
-    ent_coef=0.005,
+    ent_coef=0.004,
     clip_range=0.1,
 )
+COMB_200 = COMB_200A(
+    experiment_name="ppo_bc/combination/2.0.0",
+    load_model="ppo_bc/pretrain/2.0.0c-comb/final.zip",
+    load_dataset="ppo_bc/pretrain/2.0.0.npz",
+    adversarial_ag=False,  # non-adv lineage: no adversarial task sampling
+)
+COMB_201A = COMB_200A(
+    experiment_name="ppo_bc_adv/combination/2.1.0",
+    load_model="ppo_bc_adv/pretrain/2.0.1c-comb/final.zip",
+    load_dataset="ppo_bc_adv/pretrain/2.0.1.npz",
+)
 
+# Switching: 5 single gait tasks, fast switching. RL counterpart of the c-swit
+# critic pretrain — warm-start from that re-fit critic (+ its frozen actor) and
+# train on the same fast-switching single-task distribution. Same gait-2.x recipe
+# as COMB above; only the env fields differ (singles + 3s switching).
+SWIT_200A = TrainConfig(
+    # identity
+    experiment_name="ppo_bc_adv/switching/2.0.0",
+    timesteps=300*1024*14,
+    task_scheme=GAIT,
+    load_model="ppo_bc_adv/pretrain/2.0.0c-swit/final.zip",  # pretrained critic and actor
+    load_dataset="ppo_bc_adv/pretrain/2.0.0.npz",
+    # environment
+    allowed_task_mixing=SINGLE_TASKS_GAIT,
+    ep_time=10,
+    task_switching_time=3.0,  # switch fast
+    use_indv_task_rew=True,
+    # dagger / bc
+    bc_coef=0.1,  # regularization instead of dominating signal
+    bc_loss_type="mse",
+    collect_data=False,  # no DAgger during RL
+    # adversarial — adv lineage continues adversarial task sampling into RL.
+    # (decoupled from collect_data; the PMF rescore loop runs on its own.)
+    adversarial_ag=True,
+    # model initialization
+    init_log_std=float(np.log(1)),
+    # ppo
+    learning_rate=LinearSchedule(5e-5, 5e-6, 0.8),
+    ent_coef=0.004,
+    clip_range=0.1,
+)
+SWIT_200 = SWIT_200A(
+    experiment_name="ppo_bc/switching/2.0.0",
+    load_model="ppo_bc/pretrain/2.0.0c-swit/final.zip",
+    load_dataset="ppo_bc/pretrain/2.0.0.npz",
+    adversarial_ag=False,  # non-adv lineage: no adversarial task sampling
+)
+SWIT_201A = SWIT_200A(
+    experiment_name="ppo_bc_adv/switching/2.1.0",
+    load_model="ppo_bc_adv/pretrain/2.0.1c-swit/final.zip",
+    load_dataset="ppo_bc_adv/pretrain/2.0.1.npz",
+)
+
+# Comb-swit: singles + combos together, fast switching over the union. RL
+# counterpart of the c-cs critic pretrain; same recipe as SWIT but the task
+# distribution is the union of single + combination gait tasks.
+CS_200A = TrainConfig(
+    # identity
+    experiment_name="ppo_bc_adv/comb_switching/2.0.0",
+    timesteps=300*1024*14,
+    task_scheme=GAIT,
+    load_model="ppo_bc_adv/pretrain/2.0.0c-cs/final.zip",  # pretrained critic and actor
+    load_dataset="ppo_bc_adv/pretrain/2.0.0.npz",
+    # environment
+    allowed_task_mixing=(*SINGLE_TASKS_GAIT, *COMBINATION_TASKS_GAIT),
+    ep_time=10,
+    task_switching_time=3.0,  # switch fast over the union
+    use_indv_task_rew=True,
+    # dagger / bc
+    bc_coef=0.1,  # regularization instead of dominating signal
+    bc_loss_type="mse",
+    collect_data=False,  # no DAgger during RL
+    # adversarial — adv lineage continues adversarial task sampling into RL.
+    # (decoupled from collect_data; the PMF rescore loop runs on its own.)
+    adversarial_ag=True,
+    # model initialization
+    init_log_std=float(np.log(1)),
+    # ppo
+    learning_rate=LinearSchedule(5e-5, 5e-6, 0.8),
+    ent_coef=0.004,
+    clip_range=0.1,
+)
+CS_200 = CS_200A(
+    experiment_name="ppo_bc/comb_switching/2.0.0",
+    load_model="ppo_bc/pretrain/2.0.0c-cs/final.zip",
+    load_dataset="ppo_bc/pretrain/2.0.0.npz",
+    adversarial_ag=False,  # non-adv lineage: no adversarial task sampling
+)
+CS_201A = CS_200A(
+    experiment_name="ppo_bc_adv/comb_switching/2.1.0",
+    load_model="ppo_bc_adv/pretrain/2.0.1c-cs/final.zip",
+    load_dataset="ppo_bc_adv/pretrain/2.0.1.npz",
+)
 
 # Registry consumed by train.py's --preset flag.
 PRESETS: dict[str, TrainConfig] = {
-    # gait (2.x.x)
-    "pretrain_gait": PRETRAIN_GAIT,
-    "switching_gait": SWITCHING_GAIT,
-    "combination_gait": COMBINATION_GAIT,
-    # legacy onehot (1.x.x)
-    "pretrain": PRETRAIN,
-    "pretrain_2": PRETRAIN_2,
-    "pretrain_3": PRETRAIN_3,
-    "combination": COMBINATION,
+    # "pretrain": PRETRAIN,
+    # "combination": COMBINATION,
+    "pretrain_200": PRETRAIN_200,
+    "pretrain_300a": PRETRAIN_300A,
+    
+    "combination_200a": COMB_200A,
+    "combination_210a": COMB_201A,
+    "combination_200": COMB_200,
+    "switching_200a": SWIT_200A,
+    "switching_210a": SWIT_201A,
+    "switching_200": SWIT_200,
+    "comb_switching_200a": CS_200A,
+    "comb_switching_210a": CS_201A,
+    "comb_switching_200": CS_200,
 }

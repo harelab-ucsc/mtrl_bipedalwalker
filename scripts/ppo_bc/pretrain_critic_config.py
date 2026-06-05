@@ -31,8 +31,6 @@ import torch
 
 from mdp.bipedal_walker.tasks import (
     GAIT,
-    ONEHOT,
-    SINGLE_TASKS,
     SINGLE_TASKS_GAIT,
     COMBINATION_TASKS_GAIT,
     GaitTask,
@@ -78,6 +76,9 @@ class PretrainCriticConfig:
     cmd_switching_time: tuple[float, float] = (3.0, 4.0)
     # secs between task resamples; > ep_time disables in-episode task switching.
     task_switching_time: float = 11.0
+    # When False (default), in-episode task draws are without replacement (no
+    # consecutive repeats); errors at init if draws-per-episode > number of tasks.
+    task_switch_replacement: bool = False
     cmd_interp_speed: tuple[float, float] = (5.0, 1.0)  # (x_vel, tilt)
     cmd_sample_range: tuple[tuple[float, float], tuple[float, float]] = (
         (-5.0, 5.0),
@@ -199,44 +200,6 @@ CS_201A = CS_200A(
     load_actor_from="ppo_bc_adv/pretrain/2.0.1/final.zip",
 )
 
-# =============================== legacy onehot (1.x.x) ===============================
-TASK_COMB_ONLY_MIX = (
-    (1, 0, 1),  # walk + tilt
-    # (0, 1, 1),  # flamingo + tilt
-)
-TASK_SWIT_COMB_MIX = (
-    *SINGLE_TASKS,
-    (1, 0, 1),  # walk + tilt
-    # (0, 1, 1),  # flamingo + tilt
-)
-
-# Re-fit a fresh critic against the (combo-inclusive, task-responsive) reward landscape.
-TASK_COMB_ONLY_MSE_LONG = PretrainCriticConfig(
-    experiment_name="ppo_bc/pretrain/1.0.2c",
-    task_scheme=ONEHOT,
-    load_actor_from="ppo_bc/pretrain/1.0.2/final.zip",
-    allowed_task_mixing = TASK_COMB_ONLY_MIX
-)
-TASK_COMB_ONLY_MSE_ADV_LONG = PretrainCriticConfig(
-    experiment_name="ppo_bc_adv/pretrain/1.0.2c",
-    task_scheme=ONEHOT,
-    load_actor_from="ppo_bc_adv/pretrain/1.0.2/final.zip",
-    allowed_task_mixing = TASK_COMB_ONLY_MIX
-)
-TASK_COMB_ONLY_NLL = PretrainCriticConfig(
-    experiment_name="ppo_bc/pretrain/1.0.3c",
-    task_scheme=ONEHOT,
-    load_actor_from="ppo_bc/pretrain/1.0.3/final.zip",
-    allowed_task_mixing = TASK_COMB_ONLY_MIX
-)
-TASK_COMB_ONLY_NLL_ADV = PretrainCriticConfig(
-    experiment_name="ppo_bc_adv/pretrain/1.0.3c",
-    task_scheme=ONEHOT,
-    load_actor_from="ppo_bc_adv/pretrain/1.0.3/final.zip",
-    allowed_task_mixing = TASK_COMB_ONLY_MIX
-)
-
-
 # Registry consumed by pretrain_critic.py's --preset flag.
 PRESETS: dict[str, PretrainCriticConfig] = {
     "comb_2.0.0a": COMB_200A,
@@ -248,8 +211,4 @@ PRESETS: dict[str, PretrainCriticConfig] = {
     "comb-swit_2.0.0a": CS_200A,
     "comb-swit_2.0.0": CS_200,
     "comb-swit_2.0.1a": CS_201A,
-    # "task-comb-only_1.0.2": TASK_COMB_ONLY_MSE_LONG,
-    # "task-comb-only_1.0.2a": TASK_COMB_ONLY_MSE_ADV_LONG,
-    # "task-comb-only_1.0.3": TASK_COMB_ONLY_NLL,
-    # "task-comb-only_1.0.3a": TASK_COMB_ONLY_NLL_ADV,
 }

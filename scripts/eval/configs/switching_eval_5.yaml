@@ -1,0 +1,132 @@
+# Experiment config for scripts/eval/task_switching_eval.py. Select with:
+#     python scripts/eval/task_switching_eval.py switching_eval_5
+#
+# GAIT-scheme task-switching comparison (single + task combination) of the RL-FINETUNED
+# 2.x.x gait models (the stage after pretrain): the three finetune tracks (combination /
+# switching / comb_switching) for both ours (ppo_bc) and the rudin baseline, each in plain
+# and adversarial lineages, plus the hybrid oracle as a topline. The combination- and
+# switching-track models never trained on the full switch space, so this also probes
+# cross-track generalization (the comb_switching track trained on exactly this union).
+
+eval_name: switching_eval_5
+task_scheme: gait        # gait bits (two_leg, one_leg, unused); the default
+
+# --- episode / switch ---
+ep_time: 10              # seconds per episode -> the survival window (N = ep_time * 50 frames)
+switch_fraction: 0.3333  # fraction of the episode held by task A before switching to B (N/3)
+episodes_per_pair: 1500  # episodes per (model, ordered pair A->B)
+episode_chunk: 100       # episodes per pool job (load balancing)
+seed_base: 42            # episode i uses the same seed across models (fair comparison)
+
+# --- switch endpoints: 5 single tasks + the 2 combinations (gait units) ---
+# The script runs EVERY ordered distinct pair (A->B, A != B): 7 tasks -> 42 pairs. To make it
+# lighter, lower episodes_per_pair or drop transitions via exclude_pairs below.
+switch_tasks:
+  - { name: walk_forward,  label: "walk forward",         gait: [1, 0], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [0.0, 0.0] }
+  - { name: walk_backward, label: "walk backward",        gait: [1, 0], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [0.0, 0.0] }
+  - { name: hop_forward,   label: "hop forward",          gait: [0, 1], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [0.0, 0.0] }
+  - { name: hop_backward,  label: "hop backward",         gait: [0, 1], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [0.0, 0.0] }
+  - { name: tilt,          label: "tilt",                 gait: [1, 0], cmd_vel_range: [0.0, 0.0],  cmd_tilt_range: [-0.75, 0.75] }
+  - { name: walk_fwd+tilt, label: "walk forward + tilt",  gait: [1, 0], cmd_vel_range: [0.0, 5.0],  cmd_tilt_range: [-0.75, 0.75] }
+  - { name: walk_bwd+tilt, label: "walk backward + tilt", gait: [1, 0], cmd_vel_range: [-5.0, 0.0], cmd_tilt_range: [-0.75, 0.75] }
+
+exclude_pairs: null      # default: run every ordered pair
+
+# --- run controls ---
+only_models: null
+date_suffix: false
+
+# --- models to evaluate ---
+# kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle, gait routing).
+# ref:  checkpoint path relative to models/ (hybrid: null), pointing at the final ckpt.
+# All RL-finetune checkpoints are SB3-format zips (ppo_bc trains a custom PPO_BC but
+# saves a standard policy zip; rudin uses stock PPO) -> kind: sb3.
+models:
+  # --- ours (ppo_bc): RL finetune from the pretrained critic+actor, BC @ 0.1 coef as an
+  #     anti-forgetting regularizer (no DAgger during RL) ---
+  - name: ppo_bc_adv/combination/2.0.0
+    kind: sb3
+    ref: ppo_bc_adv/combination/2.0.0/final.zip
+    desc: "Ours; gait RL finetune on walk+tilt combos (switching off); BC @ 0.1 regularizer; adversarial task selection; warm-start 2.0.0c-comb (0.5-coef pretrain)"
+
+  - name: ppo_bc_adv/combination/2.1.0
+    kind: sb3
+    ref: ppo_bc_adv/combination/2.1.0/final.zip
+    desc: "Ours; gait RL finetune on walk+tilt combos (switching off); BC @ 0.1 regularizer; adversarial task selection; warm-start 2.0.1c-comb (0.2-coef pretrain)"
+
+  - name: ppo_bc/combination/2.0.0
+    kind: sb3
+    ref: ppo_bc/combination/2.0.0/final.zip
+    desc: "Ours; gait RL finetune on walk+tilt combos (switching off); BC @ 0.1 regularizer; uniform task selection; warm-start 2.0.0c-comb (0.5-coef pretrain)"
+
+  - name: ppo_bc_adv/switching/2.0.0
+    kind: sb3
+    ref: ppo_bc_adv/switching/2.0.0/final.zip
+    desc: "Ours; gait RL finetune on 5 single tasks, fast switching (3s); BC @ 0.1 regularizer; adversarial task selection; warm-start 2.0.0c-swit (0.5-coef pretrain)"
+
+  - name: ppo_bc_adv/switching/2.1.0
+    kind: sb3
+    ref: ppo_bc_adv/switching/2.1.0/final.zip
+    desc: "Ours; gait RL finetune on 5 single tasks, fast switching (3s); BC @ 0.1 regularizer; adversarial task selection; warm-start 2.0.1c-swit (0.2-coef pretrain)"
+
+  - name: ppo_bc/switching/2.0.0
+    kind: sb3
+    ref: ppo_bc/switching/2.0.0/final.zip
+    desc: "Ours; gait RL finetune on 5 single tasks, fast switching (3s); BC @ 0.1 regularizer; uniform task selection; warm-start 2.0.0c-swit (0.5-coef pretrain)"
+
+  - name: ppo_bc_adv/comb_switching/2.0.0
+    kind: sb3
+    ref: ppo_bc_adv/comb_switching/2.0.0/final.zip
+    desc: "Ours; gait RL finetune on singles+combos union, fast switching (3s); BC @ 0.1 regularizer; adversarial task selection; warm-start 2.0.0c-cs (0.5-coef pretrain)"
+
+  - name: ppo_bc_adv/comb_switching/2.1.0
+    kind: sb3
+    ref: ppo_bc_adv/comb_switching/2.1.0/final.zip
+    desc: "Ours; gait RL finetune on singles+combos union, fast switching (3s); BC @ 0.1 regularizer; adversarial task selection; warm-start 2.0.1c-cs (0.2-coef pretrain)"
+
+  - name: ppo_bc/comb_switching/2.0.0
+    kind: sb3
+    ref: ppo_bc/comb_switching/2.0.0/final.zip
+    desc: "Ours; gait RL finetune on singles+combos union, fast switching (3s); BC @ 0.1 regularizer; uniform task selection; warm-start 2.0.0c-cs (0.5-coef pretrain)"
+
+  - name: ppo_bc_adv/pretrain/3.0.0
+    kind: sb3
+    ref: ppo_bc_adv/pretrain/3.0.0/final.zip
+    desc: "Ours; gait pretrain; MSE BC @ 0.2 coef; trained on all tasks; rollout length 600; adversarial task selection"
+
+  # --- baseline (rudin): pure-RL finetune from the pretrained critic (no BC) ---
+  - name: rudin/combination/2.0.0
+    kind: sb3
+    ref: rudin/combination/2.0.0/final.zip
+    desc: "Baseline (Rudin); pure-RL finetune on walk+tilt combos (switching off); no BC; uniform task selection"
+
+  - name: rudin_adv/combination/2.0.0
+    kind: sb3
+    ref: rudin_adv/combination/2.0.0/final.zip
+    desc: "Baseline (Rudin); pure-RL finetune on walk+tilt combos (switching off); no BC; adversarial task selection"
+
+  - name: rudin/switching/2.0.0
+    kind: sb3
+    ref: rudin/switching/2.0.0/final.zip
+    desc: "Baseline (Rudin); pure-RL finetune on 5 single tasks, fast switching (3s); no BC; uniform task selection"
+
+  - name: rudin_adv/switching/2.0.0
+    kind: sb3
+    ref: rudin_adv/switching/2.0.0/final.zip
+    desc: "Baseline (Rudin); pure-RL finetune on 5 single tasks, fast switching (3s); no BC; adversarial task selection"
+
+  - name: rudin/comb_switching/2.0.0
+    kind: sb3
+    ref: rudin/comb_switching/2.0.0/final.zip
+    desc: "Baseline (Rudin); pure-RL finetune on singles+combos union, fast switching (3s); no BC; uniform task selection"
+
+  - name: rudin_adv/comb_switching/2.0.0
+    kind: sb3
+    ref: rudin_adv/comb_switching/2.0.0/final.zip
+    desc: "Baseline (Rudin); pure-RL finetune on singles+combos union, fast switching (3s); no BC; adversarial task selection"
+
+  # --- topline reference ---
+  - name: hybrid
+    kind: hybrid
+    ref: null
+    desc: "Hybrid oracle (gait routing) — topline reference baseline"
