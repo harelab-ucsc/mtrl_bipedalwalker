@@ -30,8 +30,11 @@ import os
 import subprocess
 import threading
 
-import pygame
-from pynput import keyboard as kb
+# NOTE: pygame + pynput are imported lazily inside play_sound(), NOT at module
+# scope. `from pynput import keyboard` raises at import time on a headless Linux
+# box (no $DISPLAY), which would make `import train` crash for any non-interactive
+# caller (e.g. the bc_ablation sweep). They're only needed for the optional
+# end-of-run sound, so defer them to the one place that uses them.
 
 from utils.paths import DATASET_DIR, MODELS_DIR, LOGS_DIR, ROOT
 from utils.logging import StandardTBCallback, RewardTermLogger, fmt_duration
@@ -438,6 +441,11 @@ def print_run_info(cfg: TrainConfig, env, model):
 
 
 def play_sound(path):
+    # imported here (not at module scope) so headless callers can `import train`
+    # without a display — see the note next to the top-of-file imports.
+    import pygame
+    from pynput import keyboard as kb
+
     pygame.mixer.init()
     pygame.mixer.music.load(str(path))
     pygame.mixer.music.play()

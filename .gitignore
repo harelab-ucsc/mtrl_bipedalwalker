@@ -140,8 +140,6 @@ save/
 # Eval outputs
 scripts/eval/output/*
 
-# BC_Coef ablation: the real sweep config holds notification secrets (webhook
-# URL / SMTP password). Commit sweep.example.yaml only.
 scripts/ppo_bc_ablation/sweep.yaml
 
 # VSCode
