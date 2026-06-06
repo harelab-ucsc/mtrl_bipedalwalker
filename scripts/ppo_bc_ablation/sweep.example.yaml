@@ -1,0 +1,45 @@
+# BC_Coef ablation sweep config for scripts/ppo_bc_ablation/launch_sweep.py
+# ==========================================================================
+# Copy this to `sweep.yaml` (git-ignored) and fill in your notification block.
+# launch_sweep.py loads `sweep.yaml` if present, else falls back to this file.
+
+# --- sweep parameters ---
+# 15 coefficients x 2 lineages = 30 routines by default.
+bc_coefs: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
+lineages: [uniform, adversarial]   # which lineages to run; both -> 30 models
+
+# null = launch ALL routines at once to saturate every core (recommended on a big
+# box; each worker is BLAS-capped to 1 thread). Set an int to throttle if RAM-bound.
+max_parallel: null
+
+# null = use each preset's real timesteps. Set tiny (e.g. 28672 = 2*1024*14) for a
+# fast end-to-end smoke test of the whole pipeline.
+timesteps_override: null
+
+# null = timestamped run dir under save/bc_ablation_sweep/. Set a string to name it.
+run_tag: null
+
+# --- notification (optional) ---
+# channel: discord | ntfy | email | none
+# With `none` (or a send error) it just fires a local macOS banner.
+notify:
+  channel: none
+
+  # discord (recommended — no bot/token): in Discord, target channel ->
+  # Edit Channel -> Integrations -> Webhooks -> New Webhook -> Copy URL.
+  discord:
+    webhook_url: "https://discord.com/api/webhooks/REPLACE_ME"
+
+  # ntfy (no account): pick any topic; subscribe in the ntfy app or open
+  # https://ntfy.sh/<topic> in a browser.
+  ntfy:
+    server: "https://ntfy.sh"
+    topic: "REPLACE_ME_unique_topic"
+
+  # email: enable 2FA on the account and create an App Password (e.g. Gmail).
+  email:
+    host: "smtp.gmail.com"
+    port: 587
+    user: "you@gmail.com"
+    password: "REPLACE_ME_app_password"
+    to: "lemon@lemonfoxmere.com"

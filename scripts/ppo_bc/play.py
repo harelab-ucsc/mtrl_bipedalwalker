@@ -15,7 +15,7 @@ from mdp.bipedal_walker.tasks import GAIT, ONEHOT, SINGLE_TASKS_GAIT
 
 # =========================================
 
-EXPERIMENT_NAME = "ppo_bc_adv/pretrain/3.0.0"
+EXPERIMENT_NAME = "ppo_bc_adv/comb_switching/2.0.0"
 MODEL_CHECKPOINT = "final"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)

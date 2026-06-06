@@ -41,8 +41,8 @@ from mdp.bipedal_walker.tasks import GAIT, ONEHOT, SINGLE_TASKS_GAIT
 # =========================================
 
 # which finetuned model to load: <EXPERIMENT_NAME>/<MODEL_CHECKPOINT>.zip (under MODELS_DIR)
-EXPERIMENT_NAME = "rudin_adv/combination/1.0.0"
-MODEL_CHECKPOINT = "best/best_model"
+EXPERIMENT_NAME = "rudin/combination/2.0.0"
+MODEL_CHECKPOINT = "final"
 # None  → no plots
 # "obs" → proprioceptive observation dashboard (Plotter)
 # "reward" → per-term reward breakdown dashboard (RewardPlotter)

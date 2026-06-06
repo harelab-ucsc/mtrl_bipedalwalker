@@ -47,10 +47,10 @@ from mdp.bipedal_walker.tasks import GAIT
 # all hyperparameters live in pretrain_critic_config.py; pick one with --preset.
 from pretrain_critic_config import PRESETS, PretrainCriticConfig
 
-if not os.path.exists(MODELS_DIR / "ppo_bc"):
-    os.makedirs(MODELS_DIR / "ppo_bc")
-if not os.path.exists(LOGS_DIR / "ppo_bc"):
-    os.makedirs(LOGS_DIR / "ppo_bc")
+# exist_ok=True is deliberate: concurrent imports (the bc_ablation sweep) race the
+# old "if not exists: makedirs" pattern and one importer can crash with FileExistsError.
+os.makedirs(MODELS_DIR / "ppo_bc", exist_ok=True)
+os.makedirs(LOGS_DIR / "ppo_bc", exist_ok=True)
 
 # =========================================
 
@@ -163,7 +163,13 @@ def load_actor_only(model: PPO_BC, zip_path) -> None:
     model.policy.load_state_dict(dst_sd)
 
 
-def main(cfg: PretrainCriticConfig):
+def main(cfg: PretrainCriticConfig, extra_callbacks=None, notify=True):
+    """Pretrain one critic (actor frozen).
+
+    extra_callbacks: optional list of SB3 BaseCallbacks appended to the standard
+        set — used by the bc_ablation launcher to inject a progress writer.
+    notify: when False, skip the end-of-run macOS notification.
+    """
     assert cfg.load_actor_from, "cfg.load_actor_from is not set — point it at a PPO_BC zip."
     actor_path = Path(MODELS_DIR / cfg.load_actor_from)
     assert actor_path.exists(), f"load_actor_from does not exist: {actor_path}"
@@ -232,12 +238,16 @@ def main(cfg: PretrainCriticConfig):
 
     print_run_info(cfg, train_env, model)
 
+    callbacks = [StandardTBCallback(), RewardTermLogger(), ckpt_cb]
+    if extra_callbacks:
+        callbacks.extend(extra_callbacks)
+
     print(f"Starting critic pretraining ({cfg.timesteps:,} timesteps)...")
     start = time.time()
     model.learn(
         total_timesteps=cfg.timesteps,
         reset_num_timesteps=False,
-        callback=CallbackList([StandardTBCallback(), RewardTermLogger(), ckpt_cb]),
+        callback=CallbackList(callbacks),
         progress_bar=True,
     )
 
@@ -245,21 +255,26 @@ def main(cfg: PretrainCriticConfig):
     model.save(final_path)
     print(f"Saved final model to {final_path}")
 
+    # Tear down the SubprocVecEnv workers so they don't linger into the next
+    # in-process stage (the bc_ablation routine runs pretrain -> critic -> RL back to back).
+    train_env.close()
+
     duration = fmt_duration(time.time() - start)
     print(f"Done! Total time: {duration}")
     print(f"Experiment name: {cfg.experiment_name}")
 
-    try:
-        subprocess.run(
-            [
-                "osascript",
-                "-e",
-                f'display notification "Finished in {duration}" with title "Critic pretrain complete" subtitle "{cfg.experiment_name}"',
-            ],
-            check=False,
-        )
-    except FileNotFoundError:
-        pass  # not on macOS
+    if notify:
+        try:
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    f'display notification "Finished in {duration}" with title "Critic pretrain complete" subtitle "{cfg.experiment_name}"',
+                ],
+                check=False,
+            )
+        except FileNotFoundError:
+            pass  # not on macOS
 
 
 def print_run_info(cfg: PretrainCriticConfig, env, model):

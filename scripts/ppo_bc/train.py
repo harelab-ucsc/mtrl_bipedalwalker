@@ -45,14 +45,12 @@ from ppo_bc_sb3 import PPO_BC, PpoBcPolicy, load_expert
 # all hyperparameters live in train_config.py; pick one with --preset.
 from train_config import PRESETS, TrainConfig
 
-if not os.path.exists(MODELS_DIR / "ppo_bc"):
-    os.makedirs(MODELS_DIR / "ppo_bc")
-
-if not os.path.exists(LOGS_DIR / "ppo_bc"):
-    os.makedirs(LOGS_DIR / "ppo_bc")
-
-if not os.path.exists(DATASET_DIR / "ppo_bc"):
-    os.makedirs(DATASET_DIR / "ppo_bc")
+# exist_ok=True is deliberate: when several routine processes import this module
+# concurrently (the bc_ablation sweep), the old "if not exists: makedirs" pattern
+# races and one importer can crash with FileExistsError.
+os.makedirs(MODELS_DIR / "ppo_bc", exist_ok=True)
+os.makedirs(LOGS_DIR / "ppo_bc", exist_ok=True)
+os.makedirs(DATASET_DIR / "ppo_bc", exist_ok=True)
 
 # =========================================
 
@@ -166,7 +164,15 @@ def make_adversarial_eval_env(cfg: TrainConfig) -> RlFTEnv:
     )
 
 
-def main(cfg: TrainConfig):
+def main(cfg: TrainConfig, extra_callbacks=None, notify=True):
+    """Train one PPO_BC run.
+
+    extra_callbacks: optional list of SB3 BaseCallbacks appended to the standard
+        set — used by the bc_ablation launcher to inject a progress writer.
+    notify: when False, skip the end-of-run macOS notification + sound (the sound
+        path spins up a pygame mixer + a pynput keyboard listener, which is a
+        footgun under many parallel headless routines).
+    """
     print("Loading environments...")
 
     # bind cfg into the env factory so SubprocVecEnv workers (spawned, not forked)
@@ -254,38 +260,47 @@ def main(cfg: TrainConfig):
     # print out model and environment settings
     print_run_info(cfg, train_env, model)
 
+    callbacks = [StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]
+    if extra_callbacks:
+        callbacks.extend(extra_callbacks)
+
     start_time = time.time()
     model.learn(
         total_timesteps=cfg.timesteps,
         reset_num_timesteps=False,
-        callback=CallbackList(
-            [StandardTBCallback(), RewardTermLogger(), eval_cb, ckpt_cb]
-        ),
+        callback=CallbackList(callbacks),
         progress_bar=True,
     )
 
     # save the final model (best_model is saved by EvalCallback)
     model.save(f"{MODELS_DIR}/{cfg.experiment_name}/final")
 
+    # Explicitly tear down the SubprocVecEnv workers (14 train + 5 eval). Without
+    # this they linger until GC, which wastes cores when a caller runs several
+    # stages back-to-back in one process (the bc_ablation routine does exactly this).
+    train_env.close()
+    eval_env.close()
+
     duration = fmt_duration(time.time() - start_time)
     print(f"Done! Total time: {duration}")
     print(f"Experiment name: {cfg.experiment_name}")
 
-    try:
-        subprocess.run(
-            [
-                "osascript",
-                "-e",
-                f'display notification "Finished in {duration}" with title "Training complete" subtitle "{cfg.experiment_name}"',
-            ],
-            check=False,
-        )
-    except FileNotFoundError:
-        pass  # not on macOS
-    try:
-        play_sound(ROOT / "assets" / "train_finish.mp3")
-    except Exception as e:
-        print(f"(skipping play_sound: {e})")
+    if notify:
+        try:
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    f'display notification "Finished in {duration}" with title "Training complete" subtitle "{cfg.experiment_name}"',
+                ],
+                check=False,
+            )
+        except FileNotFoundError:
+            pass  # not on macOS
+        try:
+            play_sound(ROOT / "assets" / "train_finish.mp3")
+        except Exception as e:
+            print(f"(skipping play_sound: {e})")
 
 
 def print_run_info(cfg: TrainConfig, env, model):
