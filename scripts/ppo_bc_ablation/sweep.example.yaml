@@ -8,15 +8,37 @@
 bc_coefs: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
 lineages: [uniform, adversarial]   # which lineages to run; both -> 30 models
 
-# null = launch ALL routines at once to saturate every core (recommended on a big
-# box; each worker is BLAS-capped to 1 thread). Set an int to throttle if RAM-bound.
+# Legacy hard cap on concurrent routines. With the memory governor (below) on,
+# this is OPTIONAL — leave null to be purely memory-bound, or set an int to also
+# impose a fixed ceiling on top of the budget. Each worker is BLAS-capped to 1
+# thread, so the only real ceiling is RAM.
 max_parallel: null
+
+# --- memory governor ---
+# Admission control: launch as many routines as fit under a RAM budget of
+# (total - headroom_gb), and stop admitting new ones when the budget is tight.
+# Running routines are never paused — they finish (fully freeing their RAM) and
+# the freed memory admits the next routine. This is what prevents OOM kills.
+governor:
+  enabled: true
+  headroom_gb: 16          # budget = virtual_memory().total - headroom_gb
+  per_routine_est_gb: 6    # seed peak-RSS estimate before we observe a real one
+  sample_interval_s: 3     # how often to tree-walk RSS (decoupled from the 4 Hz UI)
 
 # null = use each preset's real timesteps. Set tiny (e.g. 28672 = 2*1024*14) for a
 # fast end-to-end smoke test of the whole pipeline.
 timesteps_override: null
 
-# null = timestamped run dir under save/bc_ablation_sweep/. Set a string to name it.
+# --- resume ---
+# A stable run_tag keeps the status/ dir + meta.json around so a relaunch can skip
+# finished routines/stages (verified by a valid final.zip on disk). Set run_tag to
+# null for a fresh timestamped run dir each launch (no cross-run skipping of the
+# dashboard, though model artifacts under models/ still persist by namespace).
+resume:
+  enabled: true
+  run_tag: "resumable"
+
+# Back-compat alias for resume.run_tag; resume.run_tag wins if both are set.
 run_tag: null
 
 # --- notification (optional) ---

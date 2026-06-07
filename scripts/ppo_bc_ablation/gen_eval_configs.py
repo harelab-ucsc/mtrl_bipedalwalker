@@ -89,6 +89,11 @@ def models_block(checkpoint: str) -> str:
         "Baseline (Rudin); pure-RL finetune on singles+combos union, fast switching (3s); "
         "no BC; adversarial task selection").rstrip("\n"))
     out.append(_model_entry(
+        "ppo_scratch/comb_switching/2.0.0", "sb3", "ppo_scratch/comb_switching/2.0.0/final.zip",
+        "Baseline (from-scratch PPO, stock SB3); no BC/experts/pretraining/warm-start; trained "
+        "one-shot on singles+combos union, fast switching (3s); 8.6M timesteps; uniform task "
+        "selection").rstrip("\n"))
+    out.append(_model_entry(
         "hybrid", "hybrid", None,
         "Hybrid oracle (gait routing) — topline reference baseline").rstrip("\n"))
     return "\n".join(out) + "\n"

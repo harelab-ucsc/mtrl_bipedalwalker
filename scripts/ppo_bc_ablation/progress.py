@@ -88,6 +88,27 @@ def new_status(path, model_id: str, bc_coef: float, adversarial: bool,
     return status
 
 
+def ensure_status(path, model_id: str, bc_coef: float, adversarial: bool,
+                  totals: dict[str, int]) -> dict:
+    """Return the existing status file untouched if it is present and valid,
+    otherwise initialise a fresh one (delegating to ``new_status``).
+
+    Resume-safe variant of ``new_status``: on a relaunch we must NOT reset
+    already-finished stages back to ``pending``. The stage totals are refreshed
+    in-place (timesteps_override may differ between runs) without disturbing each
+    stage's state/frac/num_timesteps."""
+    status = read_status(path)
+    if status is None or "stages" not in status:
+        return new_status(path, model_id, bc_coef, adversarial, totals)
+    for s in STAGES:
+        st = status["stages"].setdefault(
+            s, {"state": "pending", "frac": 0.0, "num_timesteps": 0})
+        st["total"] = int(totals.get(s, st.get("total", 0)))
+    status["updated_at"] = time.time()
+    _atomic_write(path, status)
+    return status
+
+
 def update_overall(path, *, state: str | None = None, error: str | None = None) -> None:
     status = read_status(path) or {}
     if state is not None:

@@ -41,6 +41,7 @@ import argparse
 import math
 import sys
 import traceback
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -54,7 +55,7 @@ for _p in (str(_PPO_BC), str(_HERE)):
 
 # src/ is installed editable, so these resolve globally.
 from mdp.bipedal_walker.tasks import SINGLE_TASKS_GAIT, COMBINATION_TASKS_GAIT
-from utils.paths import SAVE_DIR
+from utils.paths import SAVE_DIR, MODELS_DIR, DATASET_DIR
 
 # sibling config presets (scripts/ppo_bc on sys.path)
 from train_config import PRETRAIN_200, CS_200, CS_200A
@@ -167,6 +168,34 @@ def default_status_file(ns: str) -> str:
     return str(SAVE_DIR / "bc_ablation_runs" / f"{ns.replace('/', '__')}.json")
 
 
+def _valid_model_zip(path: Path) -> bool:
+    """A finished stage leaves a complete SB3 zip with a ``policy.pth`` member.
+    A crash *during* ``model.save`` (not atomic) can leave a truncated zip; this
+    guards against trusting one and failing in the next stage's ``set_parameters``."""
+    try:
+        if not zipfile.is_zipfile(path):
+            return False
+        with zipfile.ZipFile(path) as zf:
+            return "policy.pth" in zf.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+def stage_is_complete(ns: str, stage_key: str) -> bool:
+    """True iff ``stage_key``'s artifacts already exist on disk and validate, so
+    the stage can be skipped on resume. The pipeline already chains via these
+    ``final.zip`` files, so a skipped stage's output feeds the next for free.
+
+    pretrain additionally requires its DAgger dataset ``.npz`` (the RL stage hard-
+    depends on it via ``load_dataset``); a model alone is not enough."""
+    final_zip = MODELS_DIR / ns / stage_key / "final.zip"
+    if not _valid_model_zip(final_zip):
+        return False
+    if stage_key == "pretrain":
+        return (DATASET_DIR / f"{ns}/pretrain.npz").exists()
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Run one full PPO_BC ablation routine (pretrain -> critic -> rl).")
     ap.add_argument("--bc-coef", type=float, required=True, help="pretrain BC coefficient")
@@ -195,8 +224,9 @@ def main() -> int:
 
     status_file = args.status_file or default_status_file(ns)
     totals = {"pretrain": pretrain.timesteps, "critic": critic.timesteps, "rl": rl.timesteps}
-    progress.new_status(status_file, ns, args.bc_coef, args.adversarial, totals)
-    progress.update_overall(status_file, state="running")
+    # ensure_status (not new_status) so a resumed run keeps its finished stages.
+    progress.ensure_status(status_file, ns, args.bc_coef, args.adversarial, totals)
+    progress.update_overall(status_file, state="running", error="")
 
     stages = [
         ("pretrain", lambda: train.main(
@@ -208,6 +238,10 @@ def main() -> int:
     ]
 
     for key, run in stages:
+        if stage_is_complete(ns, key):
+            print(f"\n===== [{ns}] stage: {key} — already complete, skipping =====")
+            progress.set_stage(status_file, key, state="done")
+            continue
         print(f"\n===== [{ns}] stage: {key} =====")
         progress.set_stage(status_file, key, state="running")
         try:
