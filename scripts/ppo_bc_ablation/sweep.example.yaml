@@ -17,13 +17,22 @@ max_parallel: null
 # --- memory governor ---
 # Admission control: launch as many routines as fit under a RAM budget of
 # (total - headroom_gb), and stop admitting new ones when the budget is tight.
-# Running routines are never paused — they finish (fully freeing their RAM) and
-# the freed memory admits the next routine. This is what prevents OOM kills.
+# As routines finish they free RAM, admitting the next. The pause block below adds
+# a reactive safety net for routines that GROW after admission.
 governor:
   enabled: true
   headroom_gb: 16          # budget = virtual_memory().total - headroom_gb
   per_routine_est_gb: 6    # seed peak-RSS estimate before we observe a real one
   sample_interval_s: 3     # how often to tree-walk RSS (decoupled from the 4 Hz UI)
+  # Reactive safety net for routines that grow after admission (pretrain's DAgger
+  # buffer is unbounded). When free RAM drops below pause_avail_gb, SIGSTOP the
+  # newest routines so the kernel swaps their cold pages out; SIGCONT once RAM
+  # recovers above resume_avail_gb. Keeps >=1 routine running. Needs swap.
+  pause:
+    enabled: true
+    pause_avail_gb: 8      # shelve a routine when free RAM falls below this
+    resume_avail_gb: 16    # un-shelve when free RAM recovers above this (hysteresis)
+    min_dwell_s: 15        # min seconds between pause/resume actions (anti-flap)
 
 # null = use each preset's real timesteps. Set tiny (e.g. 28672 = 2*1024*14) for a
 # fast end-to-end smoke test of the whole pipeline.

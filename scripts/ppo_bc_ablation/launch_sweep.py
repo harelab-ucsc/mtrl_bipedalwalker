@@ -16,10 +16,16 @@ is RAM: each active routine forks ~15-20 SubprocVecEnv workers, so launching all
 30 at once OOM-kills the box. Instead of a fixed ``max_parallel``, the governor
 admits routines greedily up to a RAM budget of ``total - headroom_gb`` (default
 16 GB): a new routine launches only while ``used + projected_peak`` fits the
-budget. Running routines are never paused — they finish (fully freeing their RAM)
-and that headroom admits the next one. Monitoring is cheap: a per-tick
-``virtual_memory()`` syscall, plus a per-routine RSS tree-walk only every
-``sample_interval_s``.
+budget. As routines finish they free their RAM and the next is admitted.
+
+Because routines also GROW after admission (pretrain's DAgger buffer is unbounded),
+admission alone can't stop a mid-flight OOM. A reactive safety net handles that:
+when free RAM drops below ``pause.pause_avail_gb`` the governor SIGSTOPs the newest
+routines (their whole worker tree) so the kernel swaps their cold pages out, and
+SIGCONTs them once RAM recovers above ``pause.resume_avail_gb`` (hysteresis +
+min-dwell to avoid flapping). At least one routine always stays running. Monitoring
+is cheap: a per-tick ``virtual_memory()`` syscall, plus a per-routine RSS tree-walk
+only every ``sample_interval_s``.
 
 Resume
 ------
@@ -64,7 +70,7 @@ import notify as notifier  # stdlib-only module
 LAUNCH_ROUTINE = _HERE / "launch_routine.py"
 STAGES = ("pretrain", "critic", "rl")
 STATE_STYLE = {"queued": "grey50", "pending": "grey50", "running": "yellow",
-               "done": "green", "failed": "bold red"}
+               "paused": "blue", "done": "green", "failed": "bold red"}
 
 
 # ------------------------------------------------------------------- config
@@ -215,7 +221,7 @@ def render(work: list[dict], start: float, gov: dict | None = None) -> Group:
         table.add_column(s, no_wrap=True, width=21)
     table.add_column("state", no_wrap=True, width=7)
 
-    counts = {"queued": 0, "running": 0, "done": 0, "failed": 0}
+    counts = {"queued": 0, "running": 0, "paused": 0, "done": 0, "failed": 0}
     for w in work:
         counts[w["sched"]] = counts.get(w["sched"], 0) + 1
         st = read_status(w["status_file"]) or {}
@@ -236,8 +242,8 @@ def render(work: list[dict], start: float, gov: dict | None = None) -> Group:
     footer = Text(
         f"CPU {psutil.cpu_percent():5.1f}%   "
         f"RAM {vm.percent:4.1f}% ({vm.used / 1e9:.0f}/{vm.total / 1e9:.0f} GB)   "
-        f"running {counts['running']}  done {counts['done']}  "
-        f"failed {counts['failed']}  queued {counts['queued']}   "
+        f"running {counts['running']}  paused {counts['paused']}  "
+        f"done {counts['done']}  failed {counts['failed']}  queued {counts['queued']}   "
         f"elapsed {elapsed}",
         style="cyan",
     )
@@ -245,9 +251,10 @@ def render(work: list[dict], start: float, gov: dict | None = None) -> Group:
         gline = Text(
             f"governor  budget {gov['budget'] / 1e9:.0f} GB   "
             f"avail {gov['available'] / 1e9:.0f} GB   "
-            f"admitted {gov['admitted']}   "
+            f"admitted {gov['admitted']}  paused {gov.get('paused', 0)}   "
             f"est/routine {gov['est'] / 1e9:.1f} GB"
-            + ("   [admission held]" if gov.get("held") else ""),
+            + ("   [admission held]" if gov.get("held") else "")
+            + ("   [PAUSING — low RAM]" if gov.get("pressure") else ""),
             style="magenta",
         )
         return Group(table, footer, gline)
@@ -298,6 +305,13 @@ def main() -> int:
     hard_cap = args.max_parallel or cfg.get("max_parallel") or gov_cfg.get("max_parallel")
     hard_cap = int(hard_cap) if hard_cap else None
 
+    # reactive pause safety net (handles routines that grow after admission)
+    pause_cfg = gov_cfg.get("pause") or {}
+    pause_enabled = gov_enabled and pause_cfg.get("enabled", True)
+    pause_avail = float(pause_cfg.get("pause_avail_gb", 8)) * 1e9
+    resume_avail = float(pause_cfg.get("resume_avail_gb", 16)) * 1e9
+    min_dwell = float(pause_cfg.get("min_dwell_s", 15))
+
     # --- resume config ---
     resume_cfg = cfg.get("resume") or {}
     resume_enabled = resume_cfg.get("enabled", True) and not args.no_resume
@@ -337,18 +351,23 @@ def main() -> int:
     console.print(f"per-model logs: {run_dir / 'logs'}\n")
 
     queue = [w for w in work if w["sched"] == "queued"]
-    running: list[tuple[dict, subprocess.Popen, object]] = []
+    running: list[tuple[dict, subprocess.Popen, object]] = []   # admission order (oldest first)
+    paused: list[tuple[dict, subprocess.Popen, object]] = []     # SIGSTOPped, swapped out
     peak_est: dict[str, float] = {}   # model_id -> rolling-max tree RSS (bytes)
     start = time.time()
     last_sample = 0.0
+    last_pause_action = 0.0            # for pause/resume min-dwell (anti-flap)
     cold_start_pending = False         # True between an admit and the next RSS sample
     psutil.cpu_percent()  # prime the CPU% meter
     gov_info = {"budget": budget, "available": psutil.virtual_memory().available,
-                "admitted": 0, "est": per_routine_est, "held": False}
+                "admitted": 0, "paused": 0, "est": per_routine_est,
+                "held": False, "pressure": False}
 
     def can_admit(used: float) -> bool:
         if hard_cap and len(running) >= hard_cap:
             return False
+        if paused:
+            return False  # under pressure: resume shelved routines before adding new
         if not running:
             return True  # floor: always keep at least one routine moving
         if not gov_enabled:
@@ -361,17 +380,46 @@ def main() -> int:
     try:
         with Live(render(work, start, gov_info), console=console,
                   refresh_per_second=4, screen=False) as live:
-            while queue or running:
+            while queue or running or paused:
                 vm = psutil.virtual_memory()  # cheap per-tick syscall
-
-                # periodic RSS tree-walk (the only expensive sampling)
                 now = time.time()
+
+                # periodic RSS tree-walk (the only expensive sampling); only the
+                # un-paused routines — paused ones get swapped out, so their RSS is
+                # meaningless; keep their last (running) peak frozen.
                 if now - last_sample >= sample_interval:
                     for w, proc, _ in running:
                         rss = routine_tree_rss(proc)
                         peak_est[w["model_id"]] = max(peak_est.get(w["model_id"], 0.0), rss)
                     last_sample = now
                     cold_start_pending = False
+
+                # reactive pause/resume: shelve the newest routine when free RAM is
+                # low so the kernel can swap it out; un-shelve when RAM recovers.
+                # Hysteresis (pause<resume) + min-dwell keep it from flapping; never
+                # pause the last running routine so progress can't stall.
+                if pause_enabled and paused and not running:
+                    # forced resume: never leave zero running while work is shelved
+                    # (free RAM can't recover with nothing running -> would deadlock
+                    # in the hysteresis dead-zone). Ignores dwell on purpose.
+                    w, proc, fh = paused.pop(0)
+                    signal_tree(proc, signal.SIGCONT)
+                    w["sched"] = "running"
+                    running.insert(0, (w, proc, fh))
+                    last_pause_action = now
+                elif pause_enabled and (now - last_pause_action) >= min_dwell:
+                    if vm.available < pause_avail and len(running) > 1:
+                        w, proc, fh = running.pop()        # newest-admitted
+                        signal_tree(proc, signal.SIGSTOP)
+                        w["sched"] = "paused"
+                        paused.append((w, proc, fh))
+                        last_pause_action = now
+                    elif paused and vm.available > resume_avail:
+                        w, proc, fh = paused.pop(0)        # longest-shelved first
+                        signal_tree(proc, signal.SIGCONT)
+                        w["sched"] = "running"
+                        running.insert(0, (w, proc, fh))   # keep admission order
+                        last_pause_action = now
 
                 # admission: launch while memory (and any hard cap) allows
                 while queue and can_admit(vm.used):
@@ -383,7 +431,8 @@ def main() -> int:
                     cold_start_pending = True
                     vm = psutil.virtual_memory()  # refresh before the next admit decision
 
-                # reap finished
+                # reap finished (only un-paused routines can exit; poll paused too
+                # in case one was killed externally while stopped)
                 still = []
                 for w, proc, fh in running:
                     rc = proc.poll()
@@ -395,19 +444,33 @@ def main() -> int:
                         peak_est.pop(w["model_id"], None)
                         cold_start_pending = False  # a completion frees RAM now
                 running = still
+                still_paused = []
+                for w, proc, fh in paused:
+                    rc = proc.poll()
+                    if rc is None:
+                        still_paused.append((w, proc, fh))
+                    else:
+                        fh.close()
+                        w["sched"] = "done" if rc == 0 else "failed"
+                        peak_est.pop(w["model_id"], None)
+                paused = still_paused
 
                 gov_info.update(available=vm.available, admitted=len(running),
+                                paused=len(paused),
                                 est=max(per_routine_est, max(peak_est.values(), default=0.0)),
-                                held=bool(queue) and not can_admit(vm.used))
+                                held=bool(queue) and not can_admit(vm.used),
+                                pressure=bool(paused) or vm.available < pause_avail)
                 live.update(render(work, start, gov_info))
                 time.sleep(0.25)
             live.update(render(work, start, gov_info))
     except KeyboardInterrupt:
-        console.print("\n[red]interrupted — terminating running routines (and their worker trees)...[/red]")
-        for w, proc, fh in running:
+        console.print("\n[red]interrupted — terminating routines (and their worker trees)...[/red]")
+        # SIGCONT paused trees first: a stopped process won't act on SIGTERM until continued.
+        for w, proc, fh in running + paused:
+            signal_tree(proc, signal.SIGCONT)
             signal_tree(proc, signal.SIGTERM)
         deadline = time.time() + 5.0
-        for w, proc, fh in running:
+        for w, proc, fh in running + paused:
             try:
                 proc.wait(timeout=max(0.0, deadline - time.time()))
             except subprocess.TimeoutExpired:
