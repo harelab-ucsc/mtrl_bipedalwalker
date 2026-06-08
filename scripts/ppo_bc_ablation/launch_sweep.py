@@ -49,6 +49,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -261,6 +262,145 @@ def render(work: list[dict], start: float, gov: dict | None = None) -> Group:
     return Group(table, footer)
 
 
+# ----------------------------------------------------------- notifications
+
+# Stage emoji for the completion feed / heartbeat table header.
+STAGE_EMOJI = {"pretrain": "🧠", "critic": "📉", "rl": "🤖"}
+_DISCORD_LIMIT = 1800  # leave headroom under Discord's 2000-char content cap
+
+
+def notify_async(title: str, message: str, cfg: dict | None,
+                 mention: bool = False) -> None:
+    """Fire a notification from a daemon thread so the blocking urlopen (15s
+    timeout) never stalls the 4 Hz dashboard loop. Best-effort, never raises."""
+    threading.Thread(target=notifier.notify, args=(title, message, cfg),
+                     kwargs={"mention": mention}, daemon=True).start()
+
+
+def _chunk_lines(lines: list[str], limit: int = _DISCORD_LIMIT) -> list[list[str]]:
+    """Split lines into groups whose joined length stays under ``limit``."""
+    chunks, cur, cur_len = [], [], 0
+    for ln in lines:
+        if cur and cur_len + len(ln) + 1 > limit:
+            chunks.append(cur)
+            cur, cur_len = [], 0
+        cur.append(ln)
+        cur_len += len(ln) + 1
+    if cur:
+        chunks.append(cur)
+    return chunks or [[]]
+
+
+def collect_terminal_stages(work: list[dict]) -> set[tuple[str, str, str]]:
+    """Set of (model_id, stage, state) for every stage in a terminal state
+    (done | failed), read from the per-routine status files."""
+    out: set[tuple[str, str, str]] = set()
+    for w in work:
+        stages = (read_status(w["status_file"]) or {}).get("stages", {})
+        for s in STAGES:
+            state = stages.get(s, {}).get("state")
+            if state in ("done", "failed"):
+                out.add((w["model_id"], s, state))
+    return out
+
+
+def send_stage_completions(new_events: set[tuple[str, str, str]],
+                           label_of: dict[str, str], cfg: dict | None,
+                           sync: bool = False) -> None:
+    """Batch message for stages that reached a terminal state this interval.
+    ``sync=True`` blocks (used for the final flush, so the last completions are
+    delivered before the process exits and daemon threads are torn down)."""
+    send = notifier.notify if sync else notify_async
+    # order: by model label, then pipeline stage order
+    order = {s: i for i, s in enumerate(STAGES)}
+    rows = sorted(new_events, key=lambda e: (label_of.get(e[0], e[0]), order[e[1]]))
+    # build (line, important) — only failures and whole-routine completions (rl
+    # done) are "important" enough to @-ping; intermediate stages post silently.
+    entries: list[tuple[str, bool]] = []
+    for model_id, stage, state in rows:
+        label = label_of.get(model_id, model_id)
+        if state == "failed":
+            entries.append((f"❌ `{label}` failed at **{stage}**", True))
+        elif stage == "rl":  # last stage -> whole routine done
+            entries.append((f"🎉 `{label}` finished **{stage}** — routine complete!", True))
+        else:
+            entries.append((f"{STAGE_EMOJI.get(stage, '✅')} `{label}` finished **{stage}**", False))
+    # chunk under the Discord cap, pinging a chunk only if it carries an important event
+    chunks: list[list[tuple[str, bool]]] = []
+    cur, cur_len = [], 0
+    for line, imp in entries:
+        if cur and cur_len + len(line) + 1 > _DISCORD_LIMIT:
+            chunks.append(cur)
+            cur, cur_len = [], 0
+        cur.append((line, imp))
+        cur_len += len(line) + 1
+    if cur:
+        chunks.append(cur)
+    for i, ch in enumerate(chunks):
+        title = "✅ Stage updates" + (f" ({i + 1}/{len(chunks)})" if len(chunks) > 1 else "")
+        send(title, "\n".join(line for line, _ in ch), cfg,
+             mention=any(imp for _, imp in ch))
+
+
+def _stage_cell(stg: dict, done: str = "✓", fail: str = "x") -> str:
+    """Per-stage cell: a checkmark when done, a cross when failed, otherwise the
+    percentage complete (0% = not started). ``done``/``fail`` are configurable so
+    a code-block-aligned text variant (e.g. ✓/x) can be swapped in."""
+    state = stg.get("state", "pending")
+    if state == "done":
+        return done
+    if state == "failed":
+        return fail
+    return f"{int(stg.get('frac', 0.0) * 100)}%"
+
+
+def build_status_table(work: list[dict], done: str = "✓", fail: str = "x") -> list[str]:
+    """Monospace rows — model x the three stage cells — for a code-block table."""
+    head = f"{'model':<10}{'pre':>5}{'cri':>5}{'rl':>5}"
+    rows = [head, "-" * len(head)]
+    for w in work:
+        stages = (read_status(w["status_file"]) or {}).get("stages", {})
+        c = [_stage_cell(stages.get(s, {}), done, fail) for s in STAGES]
+        rows.append(f"{w['label']:<10}{c[0]:>5}{c[1]:>5}{c[2]:>5}")
+    return rows
+
+
+def server_state_line() -> str:
+    """One-line CPU + RAM snapshot for the check-in header."""
+    cpu = psutil.cpu_percent(interval=0.3)
+    vm = psutil.virtual_memory()
+    return (f"🖥️ CPU {cpu:.0f}%  ·  "
+            f"RAM {vm.used / 1e9:.0f}/{vm.total / 1e9:.0f} GB ({vm.percent:.0f}%)")
+
+
+def send_checkin(work: list[dict], start: float, cfg: dict | None,
+                 done: str = "✓", fail: str = "x") -> None:
+    """Periodic status check-in: timestamp + server state + per-state counts
+    (each on its own line) + a tabular snapshot (code block, chunked under
+    Discord's content cap)."""
+    counts: dict[str, int] = {}
+    for w in work:
+        counts[w["sched"]] = counts.get(w["sched"], 0) + 1
+    elapsed = time.strftime("%H:%M:%S", time.gmtime(time.time() - start))
+    summary = "\n".join([
+        f"🕐 {time.strftime('%Y-%m-%d %H:%M:%S')}  ·  ⏱️ {elapsed} elapsed",
+        server_state_line(),
+        "",
+        f"▶️ running {counts.get('running', 0)}",
+        f"⏸️ paused {counts.get('paused', 0)}",
+        f"✅ done {counts.get('done', 0)}",
+        f"❌ failed {counts.get('failed', 0)}",
+        f"⏳ queued {counts.get('queued', 0)}",
+    ])
+    rows = build_status_table(work, done, fail)
+    # reserve room for the summary + code fences on the first chunk
+    parts = _chunk_lines(rows, _DISCORD_LIMIT - len(summary) - 16)
+    for i, ch in enumerate(parts):
+        title = "📋 Sweep check-in" + (f" ({i + 1}/{len(parts)})" if len(parts) > 1 else "")
+        body = (summary + "\n" if i == 0 else "") + "```\n" + "\n".join(ch) + "\n```"
+        notify_async(title, body, cfg)
+
+
 # --------------------------------------------------------------- scheduling
 
 
@@ -293,6 +433,9 @@ def main() -> int:
     console = Console()
     cfg, cfg_path = load_config(args.config)
     notify_cfg = cfg.get("notify") or {"channel": "none"}
+    stage_updates = notify_cfg.get("stage_updates", True)
+    stage_flush_s = float(notify_cfg.get("stage_flush_s", 60))
+    checkin_s = float(notify_cfg.get("checkin_s") or notify_cfg.get("heartbeat_s") or 900)
     timesteps_override = cfg.get("timesteps_override")
 
     # --- governor config (admission control) ---
@@ -358,6 +501,12 @@ def main() -> int:
     last_sample = 0.0
     last_pause_action = 0.0            # for pause/resume min-dwell (anti-flap)
     cold_start_pending = False         # True between an admit and the next RSS sample
+    # notification feed: seed the seen-set with stages already terminal (so a
+    # resume doesn't replay old completions), and start both timers now.
+    label_of = {w["model_id"]: w["label"] for w in work}
+    seen_terminal = collect_terminal_stages(work)
+    last_stage_flush = start
+    last_checkin = start
     psutil.cpu_percent()  # prime the CPU% meter
     gov_info = {"budget": budget, "available": psutil.virtual_memory().available,
                 "admitted": 0, "paused": 0, "est": per_routine_est,
@@ -461,7 +610,26 @@ def main() -> int:
                                 held=bool(queue) and not can_admit(vm.used),
                                 pressure=bool(paused) or vm.available < pause_avail)
                 live.update(render(work, start, gov_info))
+
+                # batched stage-completion feed (~every stage_flush_s)
+                if stage_updates and (now - last_stage_flush) >= stage_flush_s:
+                    current = collect_terminal_stages(work)
+                    new_events = current - seen_terminal
+                    if new_events:
+                        send_stage_completions(new_events, label_of, notify_cfg)
+                        seen_terminal = current
+                    last_stage_flush = now
+                # periodic tabular check-in (~every checkin_s)
+                if (now - last_checkin) >= checkin_s:
+                    send_checkin(work, start, notify_cfg)
+                    last_checkin = now
+
                 time.sleep(0.25)
+            # final flush so the last stage completions aren't lost to the timer
+            if stage_updates:
+                new_events = collect_terminal_stages(work) - seen_terminal
+                if new_events:
+                    send_stage_completions(new_events, label_of, notify_cfg, sync=True)
             live.update(render(work, start, gov_info))
     except KeyboardInterrupt:
         console.print("\n[red]interrupted — terminating routines (and their worker trees)...[/red]")
@@ -482,11 +650,11 @@ def main() -> int:
     done = [w for w in work if w["sched"] == "done"]
     failed = [w for w in work if w["sched"] == "failed"]
     elapsed = time.strftime("%H:%M:%S", time.gmtime(time.time() - start))
-    title = "BC_Coef ablation sweep finished"
+    title = "🏁 BC_Coef ablation sweep finished"
     msg = (f"{len(done)}/{len(work)} routines succeeded in {elapsed}." +
            (f"\nFailed: {', '.join(w['model_id'] for w in failed)}" if failed else ""))
     console.print(f"\n[bold]{title}[/bold]\n{msg}")
-    notifier.notify(title, msg, notify_cfg)
+    notifier.notify(title, msg, notify_cfg, mention=True)
     return 1 if failed else 0
 
 

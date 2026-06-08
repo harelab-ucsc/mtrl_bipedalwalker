@@ -53,13 +53,26 @@ run_tag: null
 # --- notification (optional) ---
 # channel: discord | ntfy | email | none
 # With `none` (or a send error) it just fires a local macOS banner.
+#
+# Live progress (in addition to the end-of-sweep summary):
+#   stage_updates: post a batched feed of stage completions (grouped per flush)
+#   stage_flush_s: how often to flush that batch (seconds; default 60)
+#   checkin_s:     how often to post the full tabular status check-in (default 900)
 notify:
   channel: none
+  stage_updates: true
+  stage_flush_s: 60
+  checkin_s: 900
 
   # discord (recommended — no bot/token): in Discord, target channel ->
   # Edit Channel -> Integrations -> Webhooks -> New Webhook -> Copy URL.
   discord:
     webhook_url: "https://discord.com/api/webhooks/REPLACE_ME"
+    # Optional: numeric Discord user ID to @-ping ONLY on important events — a run
+    # failing, a whole routine finishing, and the final summary (stage updates +
+    # the check-in post silently). Developer Mode -> right-click name -> Copy User
+    # ID. A username can't be pinged via webhook, only the numeric ID.
+    mention_user_id: null
 
   # ntfy (no account): pick any topic; subscribe in the ntfy app or open
   # https://ntfy.sh/<topic> in a browser.

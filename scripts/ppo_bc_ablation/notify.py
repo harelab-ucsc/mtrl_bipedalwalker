@@ -51,20 +51,32 @@ def _local_banner(title: str, message: str) -> None:
         pass
 
 
+# Discord (Cloudflare) 403s the default "Python-urllib/x.y" User-Agent, so every
+# request must carry a real one — without this, all webhook sends silently fail.
+_USER_AGENT = "mtrl-bipedalwalker-notifier/1.0 (+https://github.com)"
+
+
 def _post(url: str, data: bytes, headers: dict[str, str]) -> None:
+    headers = {"User-Agent": _USER_AGENT, **headers}
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     urllib.request.urlopen(req, timeout=15).close()
 
 
-def _send_discord(cfg: dict, title: str, message: str) -> None:
-    url = cfg["discord"]["webhook_url"]
+def _send_discord(cfg: dict, title: str, message: str, mention: bool = False) -> None:
+    dc = cfg["discord"]
+    url = dc["webhook_url"]
     if not url or "webhook" not in url:
         raise ValueError("discord.webhook_url is not set")
-    body = json.dumps({"content": f"**{title}**\n{message}"}).encode()
-    _post(url, body, {"Content-Type": "application/json"})
+    uid = dc.get("mention_user_id")
+    prefix = f"<@{uid}> " if (mention and uid) else ""
+    payload = {"content": f"{prefix}**{title}**\n{message}"}
+    if mention and uid:
+        # only ping that one user; never @everyone/@here or roles
+        payload["allowed_mentions"] = {"parse": [], "users": [str(uid)]}
+    _post(url, json.dumps(payload).encode(), {"Content-Type": "application/json"})
 
 
-def _send_ntfy(cfg: dict, title: str, message: str) -> None:
+def _send_ntfy(cfg: dict, title: str, message: str, mention: bool = False) -> None:
     nc = cfg["ntfy"]
     server = (nc.get("server") or "https://ntfy.sh").rstrip("/")
     topic = nc["topic"]
@@ -74,7 +86,7 @@ def _send_ntfy(cfg: dict, title: str, message: str) -> None:
           {"Title": title, "Priority": "default"})
 
 
-def _send_email(cfg: dict, title: str, message: str) -> None:
+def _send_email(cfg: dict, title: str, message: str, mention: bool = False) -> None:
     ec = cfg["email"]
     msg = MIMEText(message)
     msg["Subject"] = title
@@ -89,8 +101,13 @@ def _send_email(cfg: dict, title: str, message: str) -> None:
 _SENDERS = {"discord": _send_discord, "ntfy": _send_ntfy, "email": _send_email}
 
 
-def notify(title: str, message: str, cfg: dict | None) -> bool:
+def notify(title: str, message: str, cfg: dict | None, mention: bool = False) -> bool:
     """Send ``title``/``message`` over the configured channel.
+
+    mention: when True, ping the configured user (discord.mention_user_id) — used
+    only for important events (routine completions, failures, final summary), not
+    intermediate stage updates or the check-in. Ignored by channels without a
+    mention concept.
 
     Returns True if a remote channel accepted it. On any error or ``channel:
     none``/missing config, falls back to a local banner and returns False.
@@ -99,7 +116,7 @@ def notify(title: str, message: str, cfg: dict | None) -> bool:
     sender = _SENDERS.get(channel)
     if sender is not None:
         try:
-            sender(cfg, title, message)
+            sender(cfg, title, message, mention=mention)
             return True
         except Exception as e:  # noqa: BLE001 — notification must never crash the run
             print(f"[notify] {channel} send failed ({e}); falling back to local banner")
