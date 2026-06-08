@@ -294,9 +294,11 @@ class PPO_BC(OnPolicyAlgorithm):
             return th.zeros((), device=self.device)
 
         obs, expert_act = self.demo_dataset.sample(self.bc_batch_size)
-        # cast to the dtype the policy was built with (sb3 uses float32 by default).
-        obs = obs.to(dtype=th.float32)
-        expert_act = expert_act.to(dtype=th.float32)
+        # cast to the policy's device + dtype (sb3 uses float32 by default). The
+        # device move guards against a dataset built on a different device than the
+        # policy (e.g. a loaded dataset defaulting to "auto" -> cuda on a GPU box).
+        obs = obs.to(self.device, dtype=th.float32)
+        expert_act = expert_act.to(self.device, dtype=th.float32)
         dist = self.policy.get_distribution(obs)
         if self.bc_loss_type == "mse":
             # dist.mode() is the deterministic action (gaussian mean, possibly

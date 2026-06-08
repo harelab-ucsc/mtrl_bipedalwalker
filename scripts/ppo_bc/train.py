@@ -243,8 +243,12 @@ def main(cfg: TrainConfig, extra_callbacks=None, notify=True):
     # load in dagger dataset if specified (npz from a prior dump_dataset call).
     # cfg.load_dataset is a bare path; DATASET_DIR is added here, not in the config.
     if cfg.load_dataset:
+        # pass cfg.device explicitly: DaggerDataset.load defaults to "auto", which
+        # resolves to cuda on a GPU box and would mismatch the (cpu) policy in the
+        # BC loss. The fresh-collected dataset already uses self.device this way.
         model.demo_dataset = DaggerDataset.load(
-            str(DATASET_DIR / cfg.load_dataset), max_size=cfg.dagger_max_size
+            str(DATASET_DIR / cfg.load_dataset),
+            device=cfg.device, max_size=cfg.dagger_max_size,
         )
 
     # define callbacks
