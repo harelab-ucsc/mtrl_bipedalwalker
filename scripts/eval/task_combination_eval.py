@@ -54,7 +54,7 @@ from mdp.bipedal_walker.tasks import GAIT, ONEHOT, GaitTask, reward_mode
 
 FPS = 50  # env step rate, fixed by BipedalWalker-v3
 
-N_WORKERS = int(14 * 1.5)
+N_WORKERS = 14
 PROGRESS_EVERY = 10  # episodes between progress pings
 
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
@@ -88,6 +88,7 @@ class EvalConfig:
     task_combinations: list[dict]
     only_models: list[str] | None
     date_suffix: bool
+    flat_terrain: bool  # force perfectly flat terrain (disable height randomization); default bumpy
     models: list[dict]  # name, kind ("sb3"|"torch"|"hybrid"), ref, desc
 
     @property
@@ -204,6 +205,7 @@ def load_config(name_or_path: str) -> EvalConfig:
         task_combinations=validate_combinations(raw["task_combinations"], scheme),
         only_models=raw.get("only_models"),
         date_suffix=bool(raw.get("date_suffix", True)),
+        flat_terrain=bool(raw.get("flat_terrain", False)),
         models=raw["models"],
     )
 
@@ -307,6 +309,7 @@ def make_eval_env() -> RlFTEnv:
         use_rew_for_individual_tasks=True,
         manual_ctrl_mode=True,
         task_scheme=CFG.task_scheme,
+        flat_terrain=CFG.flat_terrain,
     )
 
 

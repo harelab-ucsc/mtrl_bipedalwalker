@@ -4,7 +4,7 @@
 # GAIT-scheme single-task comparison: the 2.x.x / 3.x.x gait pretrain models (ours, adversarial)
 # vs the rudin / rudin_adv DAgger-distilled gait baselines, plus the hybrid oracle as a topline.
 
-eval_name: singletask_eval_4
+eval_name: singletask_eval_4a
 task_scheme: gait        # gait bits (two_leg, one_leg, unused); the default
 date_suffix: false
 ep_time: 10              # seconds per episode -> the survival window
@@ -28,37 +28,7 @@ only_models: null
 # kind: sb3 (PPO.load) | torch (StudentModel) | hybrid (HybridModelV2 oracle, gait routing).
 # ref:  checkpoint path relative to models/ (hybrid: null).
 models:
-  - name: ppo_bc_adv/pretrain/2.0.0
-    kind: sb3
-    ref: ppo_bc_adv/pretrain/2.0.0/final.zip
-    desc: "Ours; gait pretrain; MSE BC @ 0.5 coef; rollout length 300; adversarial task selection"
-
   - name: ppo_bc/pretrain/2.0.0
     kind: sb3
     ref: ppo_bc/pretrain/2.0.0/final.zip
     desc: "Ours; gait pretrain; MSE BC @ 0.5 coef; rollout length 300; no adversarial task selection"
-
-  - name: ppo_bc_adv/pretrain/2.0.1
-    kind: sb3
-    ref: ppo_bc_adv/pretrain/2.0.1/final.zip
-    desc: "Ours; gait pretrain; MSE BC @ 0.2 coef; rollout length 300; adversarial task selection"
-
-  - name: ppo_bc_adv/pretrain/3.0.0
-    kind: sb3
-    ref: ppo_bc_adv/pretrain/3.0.0/final.zip
-    desc: "Ours; gait pretrain; MSE BC @ 0.2 coef; trained on all tasks; rollout length 600; adversarial task selection"
-
-  - name: rudin/distill/2.0.0
-    kind: torch
-    ref: rudin/distill/2.0.0/final.pt
-    desc: "Baseline (Rudin); DAgger-distilled gait student; uniform task selection"
-
-  - name: rudin_adv/distill/2.0.0
-    kind: torch
-    ref: rudin_adv/distill/2.0.0/final.pt
-    desc: "Baseline (Rudin); DAgger-distilled gait student; adversarial task selection"
-
-  - name: hybrid
-    kind: hybrid
-    ref: null
-    desc: "Hybrid oracle (gait routing) — topline reference baseline"

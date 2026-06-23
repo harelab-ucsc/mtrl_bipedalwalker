@@ -107,7 +107,7 @@ def pair_label(pair: tuple[str, str]) -> str:
 
 
 # --- machine / cosmetic knobs (not part of an experiment definition) ---
-N_WORKERS = int(14 * 1.5)
+N_WORKERS = 14
 PROGRESS_EVERY = 10  # episodes between progress pings
 
 # --- output location + where named YAML configs live ---
@@ -171,6 +171,7 @@ class EvalConfig:
     exclude_pairs: list[tuple[str, str]]
     only_models: list[str] | None  # subset of model names to run, or None for all
     date_suffix: bool  # append a timestamp to the output directory name
+    flat_terrain: bool  # force perfectly flat terrain (disable height randomization); default bumpy
     # Each model dict: name, kind ("sb3"|"torch"|"hybrid"), ref (checkpoint path
     # relative to models/, None for hybrid), desc (shown in models.md / meta.json).
     models: list[dict]
@@ -337,6 +338,7 @@ def load_config(name_or_path: str) -> EvalConfig:
         exclude_pairs=[tuple(p) for p in (raw.get("exclude_pairs") or [])],
         only_models=raw.get("only_models"),
         date_suffix=bool(raw.get("date_suffix", True)),
+        flat_terrain=bool(raw.get("flat_terrain", False)),
         models=raw["models"],
     )
 
@@ -413,6 +415,7 @@ def make_eval_env() -> RlFTEnv:
         use_rew_for_individual_tasks=True,
         manual_ctrl_mode=True,
         task_scheme=CFG.task_scheme,
+        flat_terrain=CFG.flat_terrain,
     )
 
 

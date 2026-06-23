@@ -13,6 +13,7 @@ ep_time: 10
 modulate_period: 3
 episodes_per_combo: 10000
 episode_chunk: 100
+flat_terrain: true
 seed_base: 42
 
 task_combinations:

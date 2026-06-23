@@ -92,7 +92,7 @@ FPS = 50  # env step rate, fixed by BipedalWalker-v3
 ONEHOT_TASKS = ["walk_forward", "walk_backward", "flamingo", "tilt"]
 
 # --- machine / cosmetic knobs (not part of an experiment definition) ---
-N_WORKERS = int(14 * 1.5)
+N_WORKERS = 14
 PROGRESS_EVERY = 10  # episodes between progress pings
 
 # --- output location + where named YAML configs live ---
@@ -125,6 +125,7 @@ class EvalConfig:
     cmd_tilt_range: tuple[float, float]
     only_models: list[str] | None  # subset of model names to run, or None for all
     date_suffix: bool  # append a timestamp to the output directory name
+    flat_terrain: bool  # force perfectly flat terrain (disable height randomization); default bumpy
     # Per-task gait units (gait scheme only): each a {name, label, gait_bits (3-tuple),
     # cmd_vel_range, cmd_tilt_range} dict parsed from the YAML `tasks` block. Empty
     # under onehot (the hardcoded ONEHOT_TASKS / sample_command path is used instead).
@@ -237,6 +238,7 @@ def load_config(name_or_path: str) -> EvalConfig:
         cmd_tilt_range=tuple(raw.get("cmd_tilt_range", (-0.75, 0.75))),
         only_models=raw.get("only_models"),
         date_suffix=bool(raw.get("date_suffix", True)),
+        flat_terrain=bool(raw.get("flat_terrain", False)),
         tasks=tasks,
         models=raw["models"],
     )
@@ -358,6 +360,7 @@ def make_eval_env() -> RlFTEnv:
         use_rew_for_individual_tasks=True,
         manual_ctrl_mode=True,
         task_scheme=CFG.task_scheme,
+        flat_terrain=CFG.flat_terrain,
     )
 
 

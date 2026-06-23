@@ -13,6 +13,7 @@ ep_time: 10
 switch_fraction: 0.3333
 episodes_per_pair: 1500
 episode_chunk: 100
+flat_terrain: true
 seed_base: 42
 
 switch_tasks:

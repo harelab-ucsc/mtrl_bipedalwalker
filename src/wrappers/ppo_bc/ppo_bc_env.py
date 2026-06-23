@@ -25,8 +25,37 @@ import math
 from gymnasium import spaces
 import pygame
 
-from gymnasium.envs.box2d.bipedal_walker import BipedalWalker
+from gymnasium.envs.box2d.bipedal_walker import (
+    BipedalWalker,
+    TERRAIN_HEIGHT,
+    TERRAIN_LENGTH,
+    TERRAIN_STEP,
+)
 from wrappers.bipedal_walker.proprio_wrapper import ProprioObsWrapper
+
+
+def _flat_generate_terrain(self, hardcore):
+    """Drop-in for BipedalWalker._generate_terrain that builds a perfectly flat
+    strip at TERRAIN_HEIGHT (no GRASS bump noise, no hardcore features). Bound onto
+    the unwrapped env when RlFTEnv is constructed with flat_terrain=True, so every
+    reset regenerates flat ground. Mirrors gymnasium's edge-building loop."""
+    self.terrain, self.terrain_x, self.terrain_y = [], [], []
+    for i in range(TERRAIN_LENGTH):
+        self.terrain_x.append(i * TERRAIN_STEP)
+        self.terrain_y.append(TERRAIN_HEIGHT)
+    self.terrain_poly = []
+    for i in range(TERRAIN_LENGTH - 1):
+        poly = [
+            (self.terrain_x[i], self.terrain_y[i]),
+            (self.terrain_x[i + 1], self.terrain_y[i + 1]),
+        ]
+        self.fd_edge.shape.vertices = poly
+        t = self.world.CreateStaticBody(fixtures=self.fd_edge)
+        color = (76, 255 if i % 2 == 0 else 204, 76)
+        t.color1 = t.color2 = color
+        poly += [(poly[1][0], 0), (poly[0][0], 0)]
+        self.terrain_poly.append((poly, (102, 153, 76)))
+    self.terrain.reverse()
 
 
 class RlFTEnv(ProprioObsWrapper):
@@ -50,6 +79,7 @@ class RlFTEnv(ProprioObsWrapper):
         hull_x_range: tuple[float, float] = (20.0, 60.0),
         manual_ctrl_mode: bool = False,
         task_scheme: str = GAIT,
+        flat_terrain: bool = False,
     ):
         """
         RL fine-tuning env that owns its own task and command sampling, unlike the
@@ -85,8 +115,22 @@ class RlFTEnv(ProprioObsWrapper):
                 each row of allowed_task_mixing should be a mdp.bipedal_walker.tasks
                 GaitTask (gait + command ranges); under "onehot" a TaskSpec or raw
                 3-tuple. See mdp.bipedal_walker.tasks for the scheme semantics.
+            flat_terrain: When True, force a perfectly flat terrain by disabling the
+                GRASS height randomization (binds a flat _generate_terrain onto the
+                underlying BipedalWalker). Default False keeps the bumpy terrain.
         """
         super().__init__(env)
+
+        # Force perfectly flat ground by replacing the terrain generator on the
+        # unwrapped env. The Box2D collision edges are built from terrain_y during
+        # generation, so this must override _generate_terrain (called every reset)
+        # rather than post-process terrain_y after the fact.
+        if flat_terrain:
+            import types
+
+            self.unwrapped._generate_terrain = types.MethodType(
+                _flat_generate_terrain, self.unwrapped
+            )
 
         # which obs-bit scheme this env runs under (drives sampling/masking/routing)
         self._task_scheme = task_scheme
