@@ -68,7 +68,7 @@ def main():
         )
         return env
 
-    train_env = SubprocVecEnv([make_env for _ in range(14)])
+    train_env = SubprocVecEnv([make_env for _ in range(48)])
     eval_env = SubprocVecEnv([make_env for _ in range(5)])
 
     policy_kwargs = dict(
